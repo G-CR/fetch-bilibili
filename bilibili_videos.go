@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -37,7 +37,7 @@ func getUpVideos(mid string, pageSize int) []string {
 		}
 
 		// 读取响应内容
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			resp.Body.Close()
 			fmt.Printf("读取响应失败: %v\n", err)
@@ -51,8 +51,12 @@ func getUpVideos(mid string, pageSize int) []string {
 			Data    struct {
 				List struct {
 					Vlist []struct {
-						Title string `json:"title"`
-						Bvid  string `json:"bvid"`
+						Title       string `json:"title"`
+						Bvid        string `json:"bvid"`
+						Pic         string `json:"pic"`
+						Author      string `json:"author"`
+						Description string `json:"description"`
+						Duration    string `json:"duration"`
 					} `json:"vlist"`
 				} `json:"list"`
 			} `json:"data"`
