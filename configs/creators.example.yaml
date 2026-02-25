@@ -1,0 +1,7 @@
+creators:
+  - uid: "123456"
+    name: "示例博主"
+    platform: "bilibili"
+    status: "active"
+  - name: "通过名称解析"
+    platform: "bilibili"

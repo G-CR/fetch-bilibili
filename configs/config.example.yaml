@@ -1,0 +1,67 @@
+server:
+  addr: ":8080"
+  read_timeout: "10s"
+  write_timeout: "30s"
+
+storage:
+  root_dir: "/data/bilibili"
+  max_bytes: 2199023255552      # 2TB
+  safe_bytes: 1979120929996     # 90% of 2TB
+  keep_out_of_print: true
+  delete_weights:
+    out_of_print_penalty: -100
+    stable_bonus: 30
+    downloaded_bonus: 20
+    follower_weight: -10        # 默认 10
+    view_weight: -8             # 默认 8
+    favorite_weight: -6         # 默认 6
+    age_30d_bonus: 5
+    size_gb_bonus: 3
+    last_access_30d_bonus: 5
+
+scheduler:
+  fetch_interval: "45m"
+  check_interval: "24h"
+  cleanup_interval: "24h"
+  check_stable_days: 30
+
+limits:
+  global_qps: 2
+  per_creator_qps: 1
+  download_concurrency: 4
+  check_concurrency: 8
+
+creators:
+  # 博主列表文件路径（支持 YAML/JSON）
+  file: ""
+  # 动态刷新周期，0 表示只在启动时加载
+  reload_interval: "1m"
+
+bilibili:
+  resolve_name_cache_ttl: "24h"
+  request_timeout: "10s"
+  user_agent: "fetch-bilibili/1.0"
+  # 二选一：cookie 优先，sessdata 次之（自动拼成 Cookie 头）
+  cookie: ""
+  sessdata: ""
+  # 也可从文件读取，内容包含 "=" 视为完整 Cookie，否则当作 SESSDATA
+  cookie_file: ""
+  sessdata_file: ""
+  # 认证检查与自动刷新周期（可按需调整）
+  auth_check_interval: "12h"
+  auth_reload_interval: "30m"
+  # 风控退避与抖动
+  risk_backoff_base: "2s"
+  risk_backoff_max: "30s"
+  risk_backoff_jitter: 0.3
+
+mysql:
+  dsn: "fetch:fetchpass@tcp(mysql:3306)/fetch?charset=utf8mb4&parseTime=true&loc=Local"
+  max_open_conns: 20
+  max_idle_conns: 10
+  conn_max_lifetime: "30m"
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
