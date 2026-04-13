@@ -61,6 +61,8 @@ func (f *fakeCreators) CountActive(ctx context.Context) (int64, error) {
 
 type fakeVideos struct {
 	upsertErrIDs map[string]error
+	upsertIDs    map[string]int64
+	upsertCreate map[string]bool
 	list         []repo.Video
 	listErr      error
 	cleanupList  []repo.CleanupCandidate
@@ -166,7 +168,19 @@ func (f *fakeVideos) Upsert(ctx context.Context, v repo.Video) (int64, bool, err
 			return 0, false, err
 		}
 	}
-	return 1, true, nil
+	id := int64(1)
+	if f.upsertIDs != nil {
+		if nextID, ok := f.upsertIDs[v.VideoID]; ok {
+			id = nextID
+		}
+	}
+	created := true
+	if f.upsertCreate != nil {
+		if nextCreated, ok := f.upsertCreate[v.VideoID]; ok {
+			created = nextCreated
+		}
+	}
+	return id, created, nil
 }
 
 func (f *fakeVideos) UpdateState(ctx context.Context, id int64, state string) error {
@@ -307,6 +321,27 @@ func TestHandleFetchEnqueueDownload(t *testing.T) {
 	}
 	if jobsRepo.enqueued[0].Type != jobs.TypeDownload {
 		t.Fatalf("expected download job")
+	}
+}
+
+func TestHandleFetchReenqueueExistingNewVideo(t *testing.T) {
+	creators := &fakeCreators{list: []repo.Creator{{ID: 1, UID: "123"}}}
+	videos := &fakeVideos{
+		upsertIDs:    map[string]int64{"v1": 7},
+		upsertCreate: map[string]bool{"v1": false},
+		find: map[int64]repo.Video{
+			7: {ID: 7, VideoID: "v1", State: "NEW"},
+		},
+	}
+	jobsRepo := &fakeJobs{}
+	client := &stubClient{list: []bilibili.VideoMeta{{VideoID: "v1"}}}
+	h := NewDefaultHandler(creators, videos, nil, jobsRepo, client, 30, "/tmp", 0, 0, nil)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: "fetch"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(jobsRepo.enqueued) != 1 {
+		t.Fatalf("expected re-enqueue download job for existing NEW video, got %d", len(jobsRepo.enqueued))
 	}
 }
 

@@ -140,25 +140,34 @@ func (h *DefaultHandler) handleFetch(ctx context.Context) error {
 				lastErr = err
 				continue
 			}
-			if created {
-				if h.jobs == nil {
-					h.logger.Printf("下载任务未创建：未配置任务仓库 video_id=%s", meta.VideoID)
+			if !created {
+				current, err := h.videos.FindByID(ctx, id)
+				if err != nil {
+					h.logger.Printf("读取视频状态失败 video_id=%s: %v", meta.VideoID, err)
+					lastErr = err
 					continue
 				}
-				if _, err := h.jobs.Enqueue(ctx, repo.Job{
-					Type:   jobs.TypeDownload,
-					Status: jobs.StatusQueued,
-					Payload: map[string]any{
-						"video_id": id,
-					},
-				}); err != nil {
-					if errors.Is(err, jobs.ErrJobAlreadyActive) {
-						h.logger.Printf("跳过重复下载任务 video_id=%s", meta.VideoID)
-						continue
-					}
-					h.logger.Printf("创建下载任务失败 video_id=%s: %v", meta.VideoID, err)
-					lastErr = err
+				if current.State != "NEW" {
+					continue
 				}
+			}
+			if h.jobs == nil {
+				h.logger.Printf("下载任务未创建：未配置任务仓库 video_id=%s", meta.VideoID)
+				continue
+			}
+			if _, err := h.jobs.Enqueue(ctx, repo.Job{
+				Type:   jobs.TypeDownload,
+				Status: jobs.StatusQueued,
+				Payload: map[string]any{
+					"video_id": id,
+				},
+			}); err != nil {
+				if errors.Is(err, jobs.ErrJobAlreadyActive) {
+					h.logger.Printf("跳过重复下载任务 video_id=%s", meta.VideoID)
+					continue
+				}
+				h.logger.Printf("创建下载任务失败 video_id=%s: %v", meta.VideoID, err)
+				lastErr = err
 			}
 		}
 	}

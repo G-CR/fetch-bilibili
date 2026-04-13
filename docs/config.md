@@ -48,7 +48,7 @@ creators:
 
 bilibili:
   resolve_name_cache_ttl: "24h"
-  request_timeout: "10s"
+  request_timeout: "10m"
   user_agent: "fetch-bilibili/1.0"
   cookie: ""         # 可直接粘贴 Cookie
   sessdata: ""       # 或只配置 SESSDATA

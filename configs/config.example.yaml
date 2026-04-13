@@ -39,7 +39,7 @@ creators:
 
 bilibili:
   resolve_name_cache_ttl: "24h"
-  request_timeout: "10s"
+  request_timeout: "10m"
   user_agent: "fetch-bilibili/1.0"
   # 二选一：cookie 优先，sessdata 次之（自动拼成 Cookie 头）
   cookie: ""
