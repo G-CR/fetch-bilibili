@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	"fetch-bilibili/internal/dashboard"
 	"fetch-bilibili/internal/db"
 	"fetch-bilibili/internal/jobs"
+	"fetch-bilibili/internal/library"
 	"fetch-bilibili/internal/platform/bilibili"
 	"fetch-bilibili/internal/repo"
 	mysqlrepo "fetch-bilibili/internal/repo/mysql"
@@ -334,10 +334,7 @@ func (a *App) recoverMissingDownloadedVideos(ctx context.Context) error {
 }
 
 func storageVideoPath(root, platform, videoID string) string {
-	if platform == "" {
-		platform = "bilibili"
-	}
-	return filepath.Join(root, platform, videoID+".mp4")
+	return library.StoreVideoPath(root, platform, videoID)
 }
 
 func jobPayloadInt64(payload map[string]any, key string) (int64, bool) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"fetch-bilibili/internal/jobs"
+	"fetch-bilibili/internal/library"
 	"fetch-bilibili/internal/platform/bilibili"
 	"fetch-bilibili/internal/repo"
 )
@@ -450,11 +451,7 @@ func (h *DefaultHandler) getCreatorLimiter(creatorID int64) *limiter {
 }
 
 func buildVideoPath(root, platform, videoID string) string {
-	ext := ".mp4"
-	if platform == "" {
-		platform = "bilibili"
-	}
-	return filepath.Join(root, platform, videoID+ext)
+	return library.StoreVideoPath(root, platform, videoID)
 }
 
 func lessCleanupCandidate(a, b repo.CleanupCandidate) bool {
@@ -486,6 +483,17 @@ func scanStorageUsage(root string) (int64, int64, error) {
 		return 0, 0, nil
 	}
 	info, err := os.Stat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, err
+	}
+	if !info.IsDir() {
+		return 0, 0, nil
+	}
+	root = library.StoreRootPath(root)
+	info, err = os.Stat(root)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, 0, nil

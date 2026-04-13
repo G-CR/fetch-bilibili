@@ -589,10 +589,18 @@ func TestHandleDownloadCreateRecordErrorRollsBack(t *testing.T) {
 	}
 }
 
+func TestBuildVideoPathDefaultsPlatform(t *testing.T) {
+	got := buildVideoPath("/data/archive", "", "BV1")
+	want := filepath.Join("/data/archive", "store", "bilibili", "BV1.mp4")
+	if got != want {
+		t.Fatalf("expected %s, got %s", want, got)
+	}
+}
+
 func TestHandleCleanupDeletesLowestPriorityFile(t *testing.T) {
 	dir := t.TempDir()
-	lowPath := filepath.Join(dir, "bilibili", "low.mp4")
-	highPath := filepath.Join(dir, "bilibili", "high.mp4")
+	lowPath := buildVideoPath(dir, "bilibili", "low")
+	highPath := buildVideoPath(dir, "bilibili", "high")
 	if err := os.MkdirAll(filepath.Dir(lowPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -655,7 +663,7 @@ func TestHandleCleanupDeletesLowestPriorityFile(t *testing.T) {
 
 func TestHandleCleanupNoopWhenBelowSafeThreshold(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "bilibili", "keep.mp4")
+	path := buildVideoPath(dir, "bilibili", "keep")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -694,8 +702,8 @@ func TestHandleCleanupNoopWhenBelowSafeThreshold(t *testing.T) {
 
 func TestHandleCleanupSkipsOutOfPrintWhenProtected(t *testing.T) {
 	dir := t.TempDir()
-	rarePath := filepath.Join(dir, "bilibili", "rare.mp4")
-	normalPath := filepath.Join(dir, "bilibili", "normal.mp4")
+	rarePath := buildVideoPath(dir, "bilibili", "rare")
+	normalPath := buildVideoPath(dir, "bilibili", "normal")
 	if err := os.MkdirAll(filepath.Dir(rarePath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -755,7 +763,7 @@ func TestHandleCleanupSkipsOutOfPrintWhenProtected(t *testing.T) {
 
 func TestHandleCleanupCandidateShortage(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "bilibili", "keep.mp4")
+	path := buildVideoPath(dir, "bilibili", "keep")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -773,7 +781,7 @@ func TestHandleCleanupCandidateShortage(t *testing.T) {
 
 func TestHandleCleanupDeleteRecordError(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "bilibili", "broken.mp4")
+	path := buildVideoPath(dir, "bilibili", "broken")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

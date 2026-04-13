@@ -18,7 +18,7 @@ func (s *stubApp) Run(ctx context.Context) error {
 	return s.err
 }
 
-func TestLoadConfigFallback(t *testing.T) {
+func TestLoadConfigDoesNotFallbackToExample(t *testing.T) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -40,12 +40,8 @@ func TestLoadConfigFallback(t *testing.T) {
 		t.Fatalf("write fallback: %v", err)
 	}
 
-	cfg, err := loadConfig("configs/missing.yaml")
-	if err != nil {
-		t.Fatalf("loadConfig error: %v", err)
-	}
-	if cfg.Storage.RootDir != "/tmp" {
-		t.Fatalf("unexpected root_dir")
+	if _, err := loadConfig("configs/missing.yaml"); err == nil {
+		t.Fatalf("expected error")
 	}
 }
 

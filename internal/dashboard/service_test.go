@@ -238,13 +238,13 @@ func TestServiceSystemStatusRiskSnapshot(t *testing.T) {
 
 func TestServiceStorageStats(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "bilibili"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "store", "bilibili"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "bilibili", "a.mp4"), []byte("12345"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "store", "bilibili", "a.mp4"), []byte("12345"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "bilibili", "b.mp4"), []byte("12"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "store", "bilibili", "b.mp4"), []byte("12"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 

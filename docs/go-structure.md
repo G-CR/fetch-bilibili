@@ -40,6 +40,7 @@ fetch-bilibili/
     0001_init.sql
   configs/
     config.example.yaml
+    config.yaml
   scripts/
     run_local.sh
   docs/

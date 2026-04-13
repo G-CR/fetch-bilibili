@@ -56,6 +56,7 @@ docker compose logs app --tail=200
 ```
 
 注意：
+- `configs/config.example.yaml` 只是模板；实际启动配置请使用 `configs/config.yaml`。
 - 默认 `docker-compose.yml` 将 MySQL 映射到宿主机 `3307:3306`（避免 3306 冲突，可自行改回）。
 - 默认 `docker-compose.yml` 同时启动前端容器，访问地址为 `http://localhost:5173`。
 - 前端容器会挂载 `frontend/dist` 静态产物，因此在首次 `docker compose up -d --build` 前，需要先执行一次 `frontend` 本地构建。

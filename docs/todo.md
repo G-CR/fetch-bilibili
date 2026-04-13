@@ -1,6 +1,6 @@
 # 项目 TODO（动态更新）
 
-最后更新时间：2026-04-13（浏览器级 E2E 已完成 mock + live 双模式复验）
+最后更新时间：2026-04-13（已完成“存储投影层与人工浏览目录”的任务 1、任务 2，进入任务 3）
 
 说明：
 - 本文档用于维护当前项目的实施优先级、执行状态和下一步动作。
@@ -151,6 +151,31 @@
     - `cd frontend && npm run test:e2e` 通过（`mock` 模式）
     - `cd frontend && E2E_MODE=live E2E_BASE_URL=http://127.0.0.1:5173 E2E_API_BASE=http://127.0.0.1:8080 npm run test:e2e` 通过（`live` 模式）
 
+- [ ] `doing` 存储投影层与人工浏览目录
+  - 目标：将数据库继续作为唯一信源，把真实文件落盘与人工浏览目录解耦，按平台 / 博主 / 普通视频 / 绝版视频组织浏览视图。
+  - 设计要点：
+    - 真实文件进入 `store/` 主存储目录
+    - 浏览目录进入 `library/` 投影目录
+    - 浏览目录中的视频使用符号链接，不复制真实文件
+    - 每个博主目录实时维护 `_meta/creator.json` 和 `_meta/index.json`
+    - `index.json` 只保留当前磁盘上仍存在的视频，不保留已删除历史
+    - 博主改名时浏览目录名需要同步更新
+  - 已完成：
+    - 已形成设计规格：`docs/superpowers/specs/2026-04-13-storage-library-projection-design.md`
+    - 已形成实现计划：`docs/superpowers/plans/2026-04-13-storage-library-projection.md`
+    - 已新增 `internal/library` 基础投影层，覆盖主存储路径、浏览目录路径、符号链接投影、`creator.json` / `index.json` 原子写入、博主改名旧目录清理
+    - 已把真实文件路径切换到 `storage.root_dir/store/{platform}/{video_id}.mp4`
+    - 已同步修复下载、启动恢复、缺失文件修复、cleanup 容量统计和 dashboard 存储统计对 `store/` 的识别
+    - 已通过验证：`go test ./internal/library ./internal/worker ./internal/app ./internal/dashboard -count=1`
+  - 当前进行中：
+    - 接入投影层实时通知
+    - 增加按博主重建的队列与幂等保护
+    - 增加仓储查询与启动 / 定时全量重建
+  - 结果要求：
+    - 业务层只认数据库和主存储
+    - 投影层失败不阻塞主流程
+    - 支持启动重建和定时对账修复投影偏差
+
 ## P3
 
 - [ ] `todo` 多平台扩展
@@ -165,5 +190,6 @@
 
 ## 当前推荐执行顺序
 
-1. 多平台扩展
-2. App 化
+1. 存储投影层与人工浏览目录
+2. 多平台扩展
+3. App 化

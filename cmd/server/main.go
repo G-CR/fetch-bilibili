@@ -50,15 +50,5 @@ func run(ctx context.Context, configPath string) error {
 }
 
 func loadConfig(configPath string) (config.Config, error) {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			fallback := "configs/config.example.yaml"
-			if _, statErr := os.Stat(fallback); statErr == nil {
-				log.Printf("未找到配置文件 %s，改用 %s", configPath, fallback)
-				cfg, err = config.Load(fallback)
-			}
-		}
-	}
-	return cfg, err
+	return config.Load(configPath)
 }

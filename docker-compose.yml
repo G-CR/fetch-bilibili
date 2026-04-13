@@ -32,9 +32,9 @@ services:
       - "8080:8080"
     volumes:
       - ./data/bilibili:/data/bilibili
-      - ./configs/config.example.yaml:/app/config.yaml:ro
+      - ./configs/config.yaml:/app/config.yaml:ro
       # 可选：挂载博主列表文件（与 config 中的 creators.file 对应）
-      # - ./configs/creators.example.yaml:/app/creators.yaml:ro
+      # - ./configs/creators.yaml:/app/creators.yaml:ro
       - ./secrets/bilibili_cookie.txt:/app/secrets/bilibili_cookie.txt:ro
     environment:
       # 可用 FETCH_CONFIG 指定配置文件路径

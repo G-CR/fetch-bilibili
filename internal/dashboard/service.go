@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fetch-bilibili/internal/config"
+	"fetch-bilibili/internal/library"
 	"fetch-bilibili/internal/platform/bilibili"
 	"fetch-bilibili/internal/repo"
 )
@@ -295,6 +296,17 @@ func scanStorage(root string) (int64, int64, string, error) {
 		return 0, 0, "-", nil
 	}
 	info, err := os.Stat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, 0, "-", nil
+		}
+		return 0, 0, "", err
+	}
+	if !info.IsDir() {
+		return 0, 0, "-", nil
+	}
+	root = library.StoreRootPath(root)
+	info, err = os.Stat(root)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, 0, "-", nil
