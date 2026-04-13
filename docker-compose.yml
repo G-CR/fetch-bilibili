@@ -35,8 +35,7 @@ services:
       - ./configs/config.example.yaml:/app/config.yaml:ro
       # 可选：挂载博主列表文件（与 config 中的 creators.file 对应）
       # - ./configs/creators.example.yaml:/app/creators.yaml:ro
-      # 可选：挂载 Cookie 文件（与 config 中的 bilibili.cookie_file 对应）
-      # - ./secrets/bilibili_cookie.txt:/app/secrets/bilibili_cookie.txt:ro
+      - ./secrets/bilibili_cookie.txt:/app/secrets/bilibili_cookie.txt:ro
     environment:
       # 可用 FETCH_CONFIG 指定配置文件路径
       FETCH_CONFIG: /app/config.yaml

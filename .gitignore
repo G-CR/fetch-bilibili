@@ -32,6 +32,7 @@ Thumbs.db
 config.yaml
 configs/config.yaml
 .env
+secrets/
 
 # Build artifacts
 bin/

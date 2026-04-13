@@ -45,7 +45,7 @@ bilibili:
   cookie: ""
   sessdata: ""
   # 也可从文件读取，内容包含 "=" 视为完整 Cookie，否则当作 SESSDATA
-  cookie_file: ""
+  cookie_file: "/app/secrets/bilibili_cookie.txt"
   sessdata_file: ""
   # 认证检查与自动刷新周期（可按需调整）
   auth_check_interval: "12h"
