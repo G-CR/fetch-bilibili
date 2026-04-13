@@ -56,9 +56,25 @@ type Client struct {
 	riskMax     time.Duration
 	riskJitter  float64
 	riskRand    *rand.Rand
+	statusMu    sync.RWMutex
+	status      RuntimeStatus
 }
 
 type Option func(*Client)
+
+type RuntimeStatus struct {
+	CookieConfigured bool
+	CookieSource     string
+	LastReloadAt     time.Time
+	LastReloadResult string
+	LastCheckAt      time.Time
+	LastCheckResult  string
+	LastError        string
+	RiskUntil        time.Time
+	RiskBackoff      time.Duration
+	LastRiskAt       time.Time
+	LastRiskReason   string
+}
 
 func WithBaseURL(base string) Option {
 	return func(c *Client) {
@@ -114,6 +130,7 @@ func New(cfg config.BilibiliConfig, logger *log.Logger, opts ...Option) *Client 
 	}
 
 	cookie := buildCookie(cfg.Cookie, cfg.SESSDATA)
+	cookieConfigured := cookie != "" || strings.TrimSpace(cfg.CookieFile) != "" || strings.TrimSpace(cfg.SESSDATAFile) != ""
 
 	c := &Client{
 		httpClient:   &http.Client{Timeout: timeout},
@@ -131,6 +148,10 @@ func New(cfg config.BilibiliConfig, logger *log.Logger, opts ...Option) *Client 
 		riskMax:      riskMax,
 		riskJitter:   riskJitter,
 		riskRand:     rand.New(rand.NewSource(time.Now().UnixNano())),
+		status: RuntimeStatus{
+			CookieConfigured: cookieConfigured,
+			CookieSource:     detectCookieSource(cfg),
+		},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -161,7 +182,7 @@ func (c *Client) ListVideos(ctx context.Context, uid string) ([]VideoMeta, error
 	}
 	if resp.Code != 0 {
 		if resp.Code == -403 || resp.Code == -412 {
-			c.markRisk()
+			c.markRiskReason(fmt.Sprintf("/x/space/wbi/arc/search 返回风控码 %d", resp.Code))
 		}
 		return nil, fmt.Errorf("拉取视频列表失败: %s(%d)", resp.Message, resp.Code)
 	}
@@ -217,28 +238,37 @@ func (c *Client) CheckAvailable(ctx context.Context, videoID string) (bool, erro
 		return false, nil
 	}
 	if resp.Code == -403 {
-		c.markRisk()
+		c.markRiskReason(fmt.Sprintf("/x/web-interface/view 返回风控码 %d", resp.Code))
 		return false, fmt.Errorf("访问受限: %s(%d)", resp.Message, resp.Code)
 	}
 	if resp.Code == -412 {
-		c.markRisk()
+		c.markRiskReason(fmt.Sprintf("/x/web-interface/view 返回风控码 %d", resp.Code))
 		return false, fmt.Errorf("触发风控: %s(%d)", resp.Message, resp.Code)
 	}
 	return false, fmt.Errorf("检查失败: %s(%d)", resp.Message, resp.Code)
 }
 
 func (c *Client) CheckAuth(ctx context.Context) (AuthInfo, error) {
+	checkedAt := c.now()
 	var resp navResp
 	if err := c.doGetJSON(ctx, "/x/web-interface/nav", "", &resp); err != nil {
+		c.recordCheck(checkedAt, "error", err.Error())
 		return AuthInfo{}, err
 	}
 	if resp.Code != 0 {
 		if resp.Code == -403 || resp.Code == -412 {
-			c.markRisk()
+			c.markRiskReason(fmt.Sprintf("/x/web-interface/nav 返回风控码 %d", resp.Code))
 		}
-		return AuthInfo{}, fmt.Errorf("认证检查失败: %s(%d)", resp.Message, resp.Code)
+		err := fmt.Errorf("认证检查失败: %s(%d)", resp.Message, resp.Code)
+		c.recordCheck(checkedAt, "error", err.Error())
+		return AuthInfo{}, err
 	}
-	return AuthInfo{IsLogin: resp.Data.IsLogin, Mid: resp.Data.Mid, Uname: resp.Data.Uname}, nil
+	if !resp.Data.IsLogin {
+		c.recordCheck(checkedAt, "invalid", "")
+		return AuthInfo{IsLogin: false}, nil
+	}
+	c.recordCheck(checkedAt, "valid", "")
+	return AuthInfo{IsLogin: true, Mid: resp.Data.Mid, Uname: resp.Data.Uname}, nil
 }
 
 func (c *Client) ResolveUID(ctx context.Context, keyword string) (string, string, error) {
@@ -266,7 +296,7 @@ func (c *Client) ResolveUID(ctx context.Context, keyword string) (string, string
 	}
 	if resp.Code != 0 {
 		if resp.Code == -403 || resp.Code == -412 {
-			c.markRisk()
+			c.markRiskReason(fmt.Sprintf("/x/web-interface/search/type 返回风控码 %d", resp.Code))
 		}
 		return "", "", fmt.Errorf("名称解析失败: %s(%d)", resp.Message, resp.Code)
 	}
@@ -324,15 +354,25 @@ func (c *Client) Download(ctx context.Context, videoID, dst string) (int64, erro
 }
 
 func (c *Client) ReloadAuth() (bool, error) {
-	cookie, err := c.loadCookieFromFiles()
+	reloadedAt := c.now()
+	cookie, source, err := c.loadCookieFromFiles()
 	if err != nil {
+		c.recordReload(reloadedAt, "error", err.Error(), "")
 		return false, err
 	}
 	if cookie == "" {
+		c.recordReload(reloadedAt, "no_change", "", "")
 		return false, nil
 	}
 	c.setCookie(cookie)
+	c.recordReload(reloadedAt, "success", "", source)
 	return true, nil
+}
+
+func (c *Client) RuntimeStatus() RuntimeStatus {
+	c.statusMu.RLock()
+	defer c.statusMu.RUnlock()
+	return c.status
 }
 
 func (c *Client) doGetJSON(ctx context.Context, apiPath, query string, out any) error {
@@ -362,7 +402,7 @@ func (c *Client) doGetJSON(ctx context.Context, apiPath, query string, out any) 
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusPreconditionFailed {
-			c.markRisk()
+			c.markRiskReason(fmt.Sprintf("%s 返回 HTTP %d", apiPath, resp.StatusCode))
 		}
 		return fmt.Errorf("请求失败: %s", resp.Status)
 	}
@@ -391,7 +431,7 @@ func (c *Client) getPlayURLs(ctx context.Context, videoID string) ([]string, int
 	}
 	if view.Code != 0 {
 		if view.Code == -403 || view.Code == -412 {
-			c.markRisk()
+			c.markRiskReason(fmt.Sprintf("/x/web-interface/view 返回风控码 %d", view.Code))
 		}
 		return nil, 0, fmt.Errorf("获取视频信息失败: %s(%d)", view.Message, view.Code)
 	}
@@ -412,7 +452,7 @@ func (c *Client) getPlayURLs(ctx context.Context, videoID string) ([]string, int
 	}
 	if play.Code != 0 {
 		if play.Code == -403 || play.Code == -412 {
-			c.markRisk()
+			c.markRiskReason(fmt.Sprintf("/x/player/playurl 返回风控码 %d", play.Code))
 		}
 		return nil, 0, fmt.Errorf("获取播放地址失败: %s(%d)", play.Message, play.Code)
 	}
@@ -453,7 +493,7 @@ func (c *Client) downloadFile(ctx context.Context, rawURL, dst string) (int64, e
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusPreconditionFailed {
-			c.markRisk()
+			c.markRiskReason(fmt.Sprintf("下载地址返回 HTTP %d", resp.StatusCode))
 		}
 		return 0, fmt.Errorf("下载失败: %s", resp.Status)
 	}
@@ -496,7 +536,7 @@ func (c *Client) getWbiKeys(ctx context.Context) (wbiKeys, error) {
 	}
 	if resp.Code != 0 {
 		if resp.Code == -403 || resp.Code == -412 {
-			c.markRisk()
+			c.markRiskReason(fmt.Sprintf("/x/web-interface/nav 返回风控码 %d", resp.Code))
 		}
 		return wbiKeys{}, fmt.Errorf("获取 wbi key 失败: %s(%d)", resp.Message, resp.Code)
 	}
@@ -526,24 +566,24 @@ func (c *Client) getWbiKeys(ctx context.Context) (wbiKeys, error) {
 	return keys, nil
 }
 
-func (c *Client) loadCookieFromFiles() (string, error) {
+func (c *Client) loadCookieFromFiles() (string, string, error) {
 	if c.cookieFile != "" {
 		cookie, err := readCookieFile(c.cookieFile)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if cookie != "" {
-			return cookie, nil
+			return cookie, "cookie_file", nil
 		}
 	}
 	if c.sessdataFile != "" {
 		content, err := os.ReadFile(c.sessdataFile)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		return buildCookie("", string(content)), nil
+		return buildCookie("", string(content)), "sessdata_file", nil
 	}
-	return "", nil
+	return "", "", nil
 }
 
 func readCookieFile(path string) (string, error) {
@@ -612,6 +652,10 @@ func (c *Client) waitRisk(ctx context.Context) error {
 }
 
 func (c *Client) markRisk() {
+	c.markRiskReason("触发风控退避")
+}
+
+func (c *Client) markRiskReason(reason string) {
 	c.riskMu.Lock()
 	defer c.riskMu.Unlock()
 
@@ -633,6 +677,12 @@ func (c *Client) markRisk() {
 	}
 	c.riskBackoff = backoff
 	c.riskUntil = c.now().Add(backoff)
+	c.statusMu.Lock()
+	c.status.RiskBackoff = backoff
+	c.status.RiskUntil = c.riskUntil
+	c.status.LastRiskAt = c.now()
+	c.status.LastRiskReason = strings.TrimSpace(reason)
+	c.statusMu.Unlock()
 }
 
 func (c *Client) resetRisk() {
@@ -640,6 +690,10 @@ func (c *Client) resetRisk() {
 	c.riskBackoff = 0
 	c.riskUntil = time.Time{}
 	c.riskMu.Unlock()
+	c.statusMu.Lock()
+	c.status.RiskBackoff = 0
+	c.status.RiskUntil = time.Time{}
+	c.statusMu.Unlock()
 }
 
 func (c *Client) getCachedName(key string) (string, string, bool) {
@@ -732,6 +786,42 @@ func pickFavorite(fav, favorites int64) int64 {
 		return fav
 	}
 	return favorites
+}
+
+func detectCookieSource(cfg config.BilibiliConfig) string {
+	if strings.TrimSpace(cfg.Cookie) != "" || strings.TrimSpace(cfg.SESSDATA) != "" {
+		return "config"
+	}
+	if strings.TrimSpace(cfg.CookieFile) != "" {
+		return "cookie_file"
+	}
+	if strings.TrimSpace(cfg.SESSDATAFile) != "" {
+		return "sessdata_file"
+	}
+	return ""
+}
+
+func (c *Client) recordReload(at time.Time, result, errMsg, source string) {
+	c.statusMu.Lock()
+	defer c.statusMu.Unlock()
+	c.status.LastReloadAt = at
+	c.status.LastReloadResult = result
+	if strings.TrimSpace(source) != "" {
+		c.status.CookieSource = strings.TrimSpace(source)
+	}
+	if strings.TrimSpace(errMsg) != "" {
+		c.status.LastError = strings.TrimSpace(errMsg)
+	}
+}
+
+func (c *Client) recordCheck(at time.Time, result, errMsg string) {
+	c.statusMu.Lock()
+	defer c.statusMu.Unlock()
+	c.status.LastCheckAt = at
+	c.status.LastCheckResult = result
+	if strings.TrimSpace(errMsg) != "" {
+		c.status.LastError = strings.TrimSpace(errMsg)
+	}
 }
 
 // API response types

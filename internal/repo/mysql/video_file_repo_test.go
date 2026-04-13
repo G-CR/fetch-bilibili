@@ -93,3 +93,69 @@ func TestVideoFileCreateError(t *testing.T) {
 		t.Fatalf("expectations: %v", err)
 	}
 }
+
+func TestVideoFileDeleteByID(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM video_files WHERE id = ?")).
+		WithArgs(int64(8)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	deleted, err := repoImpl.VideoFiles().DeleteByID(context.Background(), 8)
+	if err != nil {
+		t.Fatalf("DeleteByID error: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected deleted=1, got %d", deleted)
+	}
+}
+
+func TestVideoFileDeleteByVideoID(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM video_files WHERE video_id = ?")).
+		WithArgs(int64(6)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	deleted, err := repoImpl.VideoFiles().DeleteByVideoID(context.Background(), 6)
+	if err != nil {
+		t.Fatalf("DeleteByVideoID error: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("expected deleted=2, got %d", deleted)
+	}
+}
+
+func TestVideoFileCountByVideoID(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM video_files WHERE video_id = ?")).
+		WithArgs(int64(6)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(2)))
+
+	count, err := repoImpl.VideoFiles().CountByVideoID(context.Background(), 6)
+	if err != nil {
+		t.Fatalf("CountByVideoID error: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected count=2, got %d", count)
+	}
+}

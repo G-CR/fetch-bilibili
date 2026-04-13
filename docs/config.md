@@ -62,6 +62,7 @@ bilibili:
 
 mysql:
   dsn: "user:pass@tcp(127.0.0.1:3306)/fetch?charset=utf8mb4&parseTime=true&loc=Local"
+  auto_migrate: true
   max_open_conns: 20
   max_idle_conns: 10
   conn_max_lifetime: "30m"
@@ -129,6 +130,7 @@ creators:
 
 ### 3.7 mysql
 - `dsn`：MySQL 连接串。
+- `auto_migrate`：是否在服务启动时自动执行内置迁移，默认开启；仅在外部迁移平台已接管 schema 变更时关闭。
 - `max_open_conns` / `max_idle_conns` / `conn_max_lifetime`：连接池配置。
 
 ### 3.8 logging

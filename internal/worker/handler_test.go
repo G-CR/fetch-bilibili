@@ -46,15 +46,31 @@ func (f *fakeCreators) ListActiveAfter(ctx context.Context, lastID int64, limit 
 	return f.list, f.err
 }
 
+func (f *fakeCreators) CountActive(ctx context.Context) (int64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	var count int64
+	for _, creator := range f.list {
+		if creator.Status == "" || creator.Status == "active" {
+			count++
+		}
+	}
+	return count, nil
+}
+
 type fakeVideos struct {
 	upsertErrIDs map[string]error
 	list         []repo.Video
 	listErr      error
+	cleanupList  []repo.CleanupCandidate
+	cleanupErr   error
 	updates      []updateCall
 	updateErr    error
 	find         map[int64]repo.Video
 	findErr      error
 	states       map[int64]string
+	lastCleanup  repo.CleanupCandidateFilter
 }
 
 type updateCall struct {
@@ -86,9 +102,24 @@ func (f *fakeJobs) UpdateStatus(ctx context.Context, id int64, status string, er
 	return repo.ErrNotImplemented
 }
 
+func (f *fakeJobs) ListRecent(ctx context.Context, filter repo.JobListFilter) ([]repo.Job, error) {
+	return nil, repo.ErrNotImplemented
+}
+
+func (f *fakeJobs) CountByStatuses(ctx context.Context, statuses []string) (int64, error) {
+	return 0, repo.ErrNotImplemented
+}
+
 type fakeVideoFiles struct {
-	created []repo.VideoFile
-	err     error
+	created      []repo.VideoFile
+	err          error
+	deleteErr    error
+	deleteAllErr error
+	countErr     error
+	deletedIDs   []int64
+	deletedVideo []int64
+	fileToVideo  map[int64]int64
+	countByVideo map[int64]int64
 }
 
 func (f *fakeVideoFiles) Create(ctx context.Context, file repo.VideoFile) (int64, error) {
@@ -97,6 +128,36 @@ func (f *fakeVideoFiles) Create(ctx context.Context, file repo.VideoFile) (int64
 	}
 	f.created = append(f.created, file)
 	return int64(len(f.created)), nil
+}
+
+func (f *fakeVideoFiles) DeleteByID(ctx context.Context, id int64) (int64, error) {
+	if f.deleteErr != nil {
+		return 0, f.deleteErr
+	}
+	f.deletedIDs = append(f.deletedIDs, id)
+	if videoID, ok := f.fileToVideo[id]; ok {
+		if current := f.countByVideo[videoID]; current > 0 {
+			f.countByVideo[videoID] = current - 1
+		}
+	}
+	return 1, nil
+}
+
+func (f *fakeVideoFiles) DeleteByVideoID(ctx context.Context, videoID int64) (int64, error) {
+	if f.deleteAllErr != nil {
+		return 0, f.deleteAllErr
+	}
+	f.deletedVideo = append(f.deletedVideo, videoID)
+	deleted := f.countByVideo[videoID]
+	f.countByVideo[videoID] = 0
+	return deleted, nil
+}
+
+func (f *fakeVideoFiles) CountByVideoID(ctx context.Context, videoID int64) (int64, error) {
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	return f.countByVideo[videoID], nil
 }
 
 func (f *fakeVideos) Upsert(ctx context.Context, v repo.Video) (int64, bool, error) {
@@ -137,6 +198,38 @@ func (f *fakeVideos) UpdateCheckStatus(ctx context.Context, id int64, state stri
 	return f.updateErr
 }
 
+func (f *fakeVideos) ListRecent(ctx context.Context, filter repo.VideoListFilter) ([]repo.Video, error) {
+	return f.list, f.listErr
+}
+
+func (f *fakeVideos) ListCleanupCandidates(ctx context.Context, filter repo.CleanupCandidateFilter) ([]repo.CleanupCandidate, error) {
+	if f.cleanupErr != nil {
+		return nil, f.cleanupErr
+	}
+	f.lastCleanup = filter
+	out := make([]repo.CleanupCandidate, 0, len(f.cleanupList))
+	for _, item := range f.cleanupList {
+		if !filter.IncludeOutOfPrint && item.State == "OUT_OF_PRINT" {
+			continue
+		}
+		out = append(out, item)
+	}
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out, nil
+}
+
+func (f *fakeVideos) CountByState(ctx context.Context, state string) (int64, error) {
+	var count int64
+	for _, video := range f.list {
+		if video.State == state {
+			count++
+		}
+	}
+	return count, nil
+}
+
 type stubClient struct {
 	list      []bilibili.VideoMeta
 	listErr   error
@@ -175,6 +268,9 @@ func (s *stubClient) Download(ctx context.Context, videoID, dst string) (int64, 
 	}
 	if s.download != nil {
 		if size, ok := s.download[videoID]; ok {
+			if err := os.WriteFile(dst, []byte("downloaded"), 0o644); err != nil {
+				return 0, err
+			}
 			return size, nil
 		}
 	}
@@ -211,6 +307,18 @@ func TestHandleFetchEnqueueDownload(t *testing.T) {
 	}
 	if jobsRepo.enqueued[0].Type != jobs.TypeDownload {
 		t.Fatalf("expected download job")
+	}
+}
+
+func TestHandleFetchIgnoresDuplicateDownloadJob(t *testing.T) {
+	creators := &fakeCreators{list: []repo.Creator{{ID: 1, UID: "123"}}}
+	videos := &fakeVideos{}
+	jobsRepo := &fakeJobs{err: jobs.ErrJobAlreadyActive}
+	client := &stubClient{list: []bilibili.VideoMeta{{VideoID: "v1"}}}
+	h := NewDefaultHandler(creators, videos, nil, jobsRepo, client, 30, "/tmp", 0, 0, nil)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: "fetch"}); err != nil {
+		t.Fatalf("expected duplicate download to be ignored, got %v", err)
 	}
 }
 
@@ -300,6 +408,23 @@ func TestHandleCheckUpdateError(t *testing.T) {
 	}
 }
 
+func TestHandleCheckSingleVideoFromPayload(t *testing.T) {
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			3: {ID: 3, VideoID: "v3", PublishTime: time.Now().Add(-40 * 24 * time.Hour), State: "DOWNLOADED"},
+		},
+	}
+	client := &stubClient{available: map[string]bool{"v3": true}}
+	h := NewDefaultHandler(&fakeCreators{}, videos, nil, nil, client, 30, "/tmp", 0, 0, nil)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: "check", Payload: map[string]any{"video_id": int64(3)}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(videos.updates) != 1 || videos.updates[0].id != 3 {
+		t.Fatalf("expected one update for target video, got %+v", videos.updates)
+	}
+}
+
 func TestHandleUnknownType(t *testing.T) {
 	h := NewDefaultHandler(&fakeCreators{}, &fakeVideos{}, nil, nil, &stubClient{}, 30, "/tmp", 0, 0, nil)
 	if err := h.Handle(context.Background(), repo.Job{Type: "unknown"}); err == nil {
@@ -378,6 +503,276 @@ func TestHandleDownloadNoStorageRoot(t *testing.T) {
 	job := repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(1)}}
 	if err := h.Handle(context.Background(), job); err == nil {
 		t.Fatalf("expected error")
+	}
+}
+
+func TestHandleDownloadPrunesStaleRecordsBeforeRedownload(t *testing.T) {
+	dir := t.TempDir()
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {ID: 1, VideoID: "v1", Platform: "bilibili", State: "DOWNLOADED"},
+		},
+	}
+	files := &fakeVideoFiles{
+		countByVideo: map[int64]int64{1: 2},
+	}
+	client := &stubClient{download: map[string]int64{"v1": 10}}
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, client, 30, dir, 0, 0, nil)
+
+	job := repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(1)}}
+	if err := h.Handle(context.Background(), job); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files.deletedVideo) != 1 || files.deletedVideo[0] != 1 {
+		t.Fatalf("expected stale records deleted before redownload, got %+v", files.deletedVideo)
+	}
+	if len(files.created) != 1 {
+		t.Fatalf("expected recreated file record")
+	}
+}
+
+func TestHandleDownloadCreateRecordErrorRollsBack(t *testing.T) {
+	dir := t.TempDir()
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {ID: 1, VideoID: "v1", Platform: "bilibili", State: "NEW"},
+		},
+	}
+	files := &fakeVideoFiles{err: errors.New("create file record failed")}
+	client := &stubClient{download: map[string]int64{"v1": 10}}
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, client, 30, dir, 0, 0, nil)
+
+	job := repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(1)}}
+	if err := h.Handle(context.Background(), job); err == nil {
+		t.Fatalf("expected error")
+	}
+	if videos.states[1] != "NEW" {
+		t.Fatalf("expected state rolled back to NEW, got %s", videos.states[1])
+	}
+	if _, err := os.Stat(buildVideoPath(dir, "bilibili", "v1")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected downloaded file removed, got err=%v", err)
+	}
+}
+
+func TestHandleCleanupDeletesLowestPriorityFile(t *testing.T) {
+	dir := t.TempDir()
+	lowPath := filepath.Join(dir, "bilibili", "low.mp4")
+	highPath := filepath.Join(dir, "bilibili", "high.mp4")
+	if err := os.MkdirAll(filepath.Dir(lowPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(lowPath, []byte("12345"), 0o644); err != nil {
+		t.Fatalf("write low file: %v", err)
+	}
+	if err := os.WriteFile(highPath, []byte("67890"), 0o644); err != nil {
+		t.Fatalf("write high file: %v", err)
+	}
+
+	videos := &fakeVideos{
+		cleanupList: []repo.CleanupCandidate{
+			{
+				VideoID:              1,
+				SourceVideoID:        "low",
+				Title:                "低价值视频",
+				State:                "DOWNLOADED",
+				CreatorFollowerCount: 10,
+				ViewCount:            20,
+				FavoriteCount:        1,
+				FileID:               11,
+				FilePath:             lowPath,
+				FileSizeBytes:        5,
+			},
+			{
+				VideoID:              2,
+				SourceVideoID:        "high",
+				Title:                "高价值视频",
+				State:                "DOWNLOADED",
+				CreatorFollowerCount: 1000,
+				ViewCount:            2000,
+				FavoriteCount:        99,
+				FileID:               12,
+				FilePath:             highPath,
+				FileSizeBytes:        5,
+			},
+		},
+	}
+	files := &fakeVideoFiles{
+		fileToVideo:  map[int64]int64{11: 1, 12: 2},
+		countByVideo: map[int64]int64{1: 1, 2: 1},
+	}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(10, 6, true)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCleanup}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files.deletedIDs) != 1 || files.deletedIDs[0] != 11 {
+		t.Fatalf("expected file 11 deleted first, got %+v", files.deletedIDs)
+	}
+	if _, err := os.Stat(lowPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected low file removed, got err=%v", err)
+	}
+	if videos.states[1] != "DELETED" {
+		t.Fatalf("expected video 1 marked deleted")
+	}
+}
+
+func TestHandleCleanupNoopWhenBelowSafeThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bilibili", "keep.mp4")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("1234"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	videos := &fakeVideos{
+		cleanupList: []repo.CleanupCandidate{
+			{
+				VideoID:       1,
+				SourceVideoID: "keep",
+				Title:         "保留视频",
+				State:         "DOWNLOADED",
+				FileID:        41,
+				FilePath:      path,
+				FileSizeBytes: 4,
+			},
+		},
+	}
+	files := &fakeVideoFiles{
+		fileToVideo:  map[int64]int64{41: 1},
+		countByVideo: map[int64]int64{1: 1},
+	}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(10, 8, true)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCleanup}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files.deletedIDs) != 0 {
+		t.Fatalf("expected no deletion below safe threshold")
+	}
+}
+
+func TestHandleCleanupSkipsOutOfPrintWhenProtected(t *testing.T) {
+	dir := t.TempDir()
+	rarePath := filepath.Join(dir, "bilibili", "rare.mp4")
+	normalPath := filepath.Join(dir, "bilibili", "normal.mp4")
+	if err := os.MkdirAll(filepath.Dir(rarePath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(rarePath, []byte("12345"), 0o644); err != nil {
+		t.Fatalf("write rare file: %v", err)
+	}
+	if err := os.WriteFile(normalPath, []byte("67890"), 0o644); err != nil {
+		t.Fatalf("write normal file: %v", err)
+	}
+
+	videos := &fakeVideos{
+		cleanupList: []repo.CleanupCandidate{
+			{
+				VideoID:              1,
+				SourceVideoID:        "rare",
+				Title:                "绝版视频",
+				State:                "OUT_OF_PRINT",
+				CreatorFollowerCount: 1,
+				ViewCount:            1,
+				FavoriteCount:        1,
+				FileID:               21,
+				FilePath:             rarePath,
+				FileSizeBytes:        5,
+			},
+			{
+				VideoID:              2,
+				SourceVideoID:        "normal",
+				Title:                "普通视频",
+				State:                "DOWNLOADED",
+				CreatorFollowerCount: 2,
+				ViewCount:            2,
+				FavoriteCount:        2,
+				FileID:               22,
+				FilePath:             normalPath,
+				FileSizeBytes:        5,
+			},
+		},
+	}
+	files := &fakeVideoFiles{
+		fileToVideo:  map[int64]int64{21: 1, 22: 2},
+		countByVideo: map[int64]int64{1: 1, 2: 1},
+	}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(10, 6, true)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCleanup}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if videos.lastCleanup.IncludeOutOfPrint {
+		t.Fatalf("expected out_of_print excluded from query")
+	}
+	if len(files.deletedIDs) != 1 || files.deletedIDs[0] != 22 {
+		t.Fatalf("expected normal file deleted, got %+v", files.deletedIDs)
+	}
+}
+
+func TestHandleCleanupCandidateShortage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bilibili", "keep.mp4")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("12345"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	h := NewDefaultHandler(&fakeCreators{}, &fakeVideos{}, &fakeVideoFiles{}, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(10, 2, true)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCleanup}); err == nil {
+		t.Fatalf("expected shortage error")
+	}
+}
+
+func TestHandleCleanupDeleteRecordError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bilibili", "broken.mp4")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("12345"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	videos := &fakeVideos{
+		cleanupList: []repo.CleanupCandidate{
+			{
+				VideoID:              3,
+				SourceVideoID:        "broken",
+				Title:                "异常视频",
+				State:                "DOWNLOADED",
+				CreatorFollowerCount: 1,
+				ViewCount:            1,
+				FavoriteCount:        1,
+				FileID:               31,
+				FilePath:             path,
+				FileSizeBytes:        5,
+			},
+		},
+	}
+	files := &fakeVideoFiles{
+		deleteErr:    errors.New("delete record failed"),
+		fileToVideo:  map[int64]int64{31: 3},
+		countByVideo: map[int64]int64{3: 1},
+	}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(10, 2, true)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCleanup}); err == nil {
+		t.Fatalf("expected delete record error")
 	}
 }
 

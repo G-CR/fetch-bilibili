@@ -1,6 +1,6 @@
 services:
   mysql:
-    image: mysql:8.0
+    image: ${MYSQL_IMAGE:-m.daocloud.io/docker.io/library/mysql:8.0}
     container_name: fetch_mysql
     environment:
       MYSQL_ROOT_PASSWORD: rootpass
@@ -18,7 +18,12 @@ services:
       retries: 5
 
   app:
-    build: .
+    image: ${APP_IMAGE:-fetch-bilibili-app}
+    build:
+      context: .
+      args:
+        GO_IMAGE: ${GO_IMAGE:-m.daocloud.io/docker.io/library/golang:1.22-alpine}
+        ALPINE_IMAGE: ${ALPINE_IMAGE:-m.daocloud.io/docker.io/library/alpine:3.20}
     container_name: fetch_bilibili
     depends_on:
       mysql:
@@ -35,3 +40,18 @@ services:
     environment:
       # 可用 FETCH_CONFIG 指定配置文件路径
       FETCH_CONFIG: /app/config.yaml
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-m.daocloud.io/docker.io/library/nginx:1.27-alpine}
+    container_name: fetch_bilibili_frontend
+    depends_on:
+      - app
+    ports:
+      - "5173:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

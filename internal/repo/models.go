@@ -43,6 +43,22 @@ type VideoFile struct {
 	CreatedAt time.Time
 }
 
+type CleanupCandidate struct {
+	VideoID              int64
+	SourceVideoID        string
+	Platform             string
+	Title                string
+	State                string
+	CreatorID            int64
+	CreatorName          string
+	CreatorFollowerCount int64
+	ViewCount            int64
+	FavoriteCount        int64
+	FileID               int64
+	FilePath             string
+	FileSizeBytes        int64
+}
+
 type Job struct {
 	ID         int64
 	Type       string
@@ -54,4 +70,21 @@ type Job struct {
 	FinishedAt time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+type VideoListFilter struct {
+	Limit     int
+	CreatorID int64
+	State     string
+}
+
+type JobListFilter struct {
+	Limit  int
+	Status string
+	Type   string
+}
+
+type CleanupCandidateFilter struct {
+	Limit             int
+	IncludeOutOfPrint bool
 }

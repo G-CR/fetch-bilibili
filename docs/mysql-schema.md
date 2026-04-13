@@ -1,6 +1,9 @@
-# MySQL 表结构草案（含索引与迁移策略）
+# MySQL 表结构说明
 
-说明：以下为第一版草案，适合单机服务。字段可根据实际采集能力调整。
+说明：
+- 当前权威 schema 来源为 `migrations/00001_init.sql`。
+- 服务启动默认会自动执行内置迁移（`mysql.auto_migrate: true`）。
+- 本文档用于说明当前表结构与索引，不再作为手工执行 SQL 的主入口。
 
 ## 1. creators（博主）
 ```sql
@@ -33,7 +36,6 @@ CREATE TABLE videos (
   cover_url VARCHAR(1024) DEFAULT NULL,
   view_count BIGINT UNSIGNED DEFAULT 0,
   favorite_count BIGINT UNSIGNED DEFAULT 0,
-  stats_json JSON DEFAULT NULL,
   state ENUM('NEW','DOWNLOADING','DOWNLOADED','OUT_OF_PRINT','STABLE','DELETED') NOT NULL DEFAULT 'NEW',
   out_of_print_at DATETIME DEFAULT NULL,
   stable_at DATETIME DEFAULT NULL,
@@ -110,9 +112,10 @@ CREATE TABLE storage_reports (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-## 7. 迁移策略建议
-- 初期使用简单的 SQL 迁移文件（按时间戳命名）。
-- 迁移工具建议：golang-migrate 或 Goose（取决于工程偏好）。
+## 7. 当前迁移策略
+- 当前采用 `Goose + embed SQL`。
+- 迁移文件目录：`migrations/`
+- 启动阶段自动执行 `Up` 迁移，迁移状态由 Goose 版本表维护。
 - 变更策略：
   - 新增字段：尽量可空并提供默认值。
   - 状态枚举扩展：优先兼容旧状态。

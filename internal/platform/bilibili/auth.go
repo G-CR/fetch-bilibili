@@ -24,6 +24,10 @@ type AuthWatcher struct {
 	logger         *log.Logger
 }
 
+type runtimeSnapshotReader interface {
+	RuntimeStatus() RuntimeStatus
+}
+
 func NewAuthWatcher(client AuthClient, reloadInterval, checkInterval time.Duration, logger *log.Logger) *AuthWatcher {
 	if logger == nil {
 		logger = log.Default()
@@ -88,6 +92,15 @@ func (w *AuthWatcher) runReload() {
 		w.logger.Printf("刷新 Cookie 失败: %v", err)
 		return
 	}
+	if reader, ok := w.client.(runtimeSnapshotReader); ok {
+		status := reader.RuntimeStatus()
+		if updated {
+			w.logger.Printf("已刷新 Cookie 配置，来源: %s", fallbackCookieSource(status.CookieSource))
+			return
+		}
+		w.logger.Printf("Cookie 配置未变化，当前来源: %s", fallbackCookieSource(status.CookieSource))
+		return
+	}
 	if updated {
 		w.logger.Printf("已刷新 Cookie 配置")
 	}
@@ -104,4 +117,11 @@ func (w *AuthWatcher) runCheck(ctx context.Context) {
 	} else {
 		w.logger.Printf("Cookie 有效，用户: %s(%d)", info.Uname, info.Mid)
 	}
+}
+
+func fallbackCookieSource(source string) string {
+	if source == "" {
+		return "unknown"
+	}
+	return source
 }

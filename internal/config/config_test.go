@@ -48,6 +48,9 @@ scheduler:
 	if cfg.Bilibili.UserAgent == "" {
 		t.Fatalf("default user agent not applied")
 	}
+	if !cfg.MySQL.AutoMigrate {
+		t.Fatalf("default auto migrate not applied")
+	}
 }
 
 func TestLoadMissingRootDir(t *testing.T) {
@@ -123,5 +126,23 @@ func TestDefaultValues(t *testing.T) {
 func TestLoadMissingFile(t *testing.T) {
 	if _, err := Load("/path/does/not/exist.yaml"); err == nil {
 		t.Fatalf("expected error for missing file")
+	}
+}
+
+func TestLoadAutoMigrateDisabled(t *testing.T) {
+	path := writeTempConfig(t, `
+storage:
+  root_dir: "/tmp/bilibili"
+mysql:
+  dsn: "user:pass@tcp(localhost:3306)/db"
+  auto_migrate: false
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.MySQL.AutoMigrate {
+		t.Fatalf("expected auto_migrate=false")
 	}
 }

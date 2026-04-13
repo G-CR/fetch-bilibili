@@ -10,6 +10,7 @@ import (
 
 type stubRepo struct {
 	last      repo.Creator
+	updated   repo.Creator
 	id        int64
 	err       error
 	count     int
@@ -17,6 +18,7 @@ type stubRepo struct {
 	listErr   error
 	statuses  map[int64]string
 	statusErr error
+	creators  map[int64]repo.Creator
 }
 
 func (s *stubRepo) Upsert(ctx context.Context, c repo.Creator) (int64, error) {
@@ -36,7 +38,12 @@ func (s *stubRepo) Create(ctx context.Context, c repo.Creator) (int64, error) {
 }
 
 func (s *stubRepo) Update(ctx context.Context, c repo.Creator) error {
-	return repo.ErrNotImplemented
+	s.updated = c
+	if s.creators == nil {
+		s.creators = make(map[int64]repo.Creator)
+	}
+	s.creators[c.ID] = c
+	return s.err
 }
 
 func (s *stubRepo) UpdateStatus(ctx context.Context, id int64, status string) error {
@@ -51,11 +58,21 @@ func (s *stubRepo) UpdateStatus(ctx context.Context, id int64, status string) er
 }
 
 func (s *stubRepo) FindByID(ctx context.Context, id int64) (repo.Creator, error) {
+	if c, ok := s.creators[id]; ok {
+		return c, nil
+	}
 	return repo.Creator{}, repo.ErrNotImplemented
 }
 
 func (s *stubRepo) ListActive(ctx context.Context, limit int) ([]repo.Creator, error) {
-	return nil, repo.ErrNotImplemented
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	out := append([]repo.Creator(nil), s.list...)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (s *stubRepo) ListActiveAfter(ctx context.Context, lastID int64, limit int) ([]repo.Creator, error) {
@@ -72,6 +89,19 @@ func (s *stubRepo) ListActiveAfter(ctx context.Context, lastID int64, limit int)
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (s *stubRepo) CountActive(ctx context.Context) (int64, error) {
+	if s.listErr != nil {
+		return 0, s.listErr
+	}
+	var count int64
+	for _, c := range s.list {
+		if c.Status == "" || c.Status == "active" {
+			count++
+		}
+	}
+	return count, nil
 }
 
 type stubResolver struct {
@@ -173,6 +203,76 @@ func TestServiceUpsertNameNoResolver(t *testing.T) {
 	repoStub := &stubRepo{}
 	svc := NewService(repoStub, nil, nil)
 	if _, err := svc.Upsert(context.Background(), Entry{Name: "name"}); err == nil {
+		t.Fatalf("expected error")
+	}
+}
+
+func TestServiceListActive(t *testing.T) {
+	repoStub := &stubRepo{
+		list: []repo.Creator{
+			{ID: 1, UID: "1"},
+			{ID: 2, UID: "2"},
+		},
+	}
+	svc := NewService(repoStub, nil, nil)
+	creators, err := svc.ListActive(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(creators) != 2 {
+		t.Fatalf("expected 2 creators")
+	}
+}
+
+func TestServiceListActiveNoRepo(t *testing.T) {
+	svc := NewService(nil, nil, nil)
+	if _, err := svc.ListActive(context.Background(), 10); err == nil {
+		t.Fatalf("expected error")
+	}
+}
+
+func TestServicePatchStatus(t *testing.T) {
+	repoStub := &stubRepo{
+		creators: map[int64]repo.Creator{
+			7: {ID: 7, UID: "777", Name: "old", Status: "active", Platform: "bilibili"},
+		},
+	}
+	svc := NewService(repoStub, nil, nil)
+	name := "new"
+	status := "paused"
+
+	creator, err := svc.Patch(context.Background(), 7, Patch{
+		Name:   &name,
+		Status: &status,
+	})
+	if err != nil {
+		t.Fatalf("patch error: %v", err)
+	}
+	if creator.Name != "new" || creator.Status != "paused" {
+		t.Fatalf("unexpected creator after patch: %+v", creator)
+	}
+	if repoStub.updated.ID != 7 {
+		t.Fatalf("expected repo update called")
+	}
+}
+
+func TestServicePatchRequiresFields(t *testing.T) {
+	repoStub := &stubRepo{
+		creators: map[int64]repo.Creator{
+			7: {ID: 7, UID: "777", Name: "old", Status: "active", Platform: "bilibili"},
+		},
+	}
+	svc := NewService(repoStub, nil, nil)
+
+	if _, err := svc.Patch(context.Background(), 7, Patch{}); err == nil {
+		t.Fatalf("expected error")
+	}
+}
+
+func TestServiceListActiveRepoError(t *testing.T) {
+	repoStub := &stubRepo{listErr: errors.New("list")}
+	svc := NewService(repoStub, nil, nil)
+	if _, err := svc.ListActive(context.Background(), 10); err == nil {
 		t.Fatalf("expected error")
 	}
 }

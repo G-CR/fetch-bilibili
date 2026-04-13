@@ -1,0 +1,252 @@
+import http from "node:http";
+
+const port = Number(process.env.E2E_API_PORT || 43180);
+
+const initialState = () => ({
+  creators: [
+    { id: 101, uid: "123456", name: "Mock 收藏向频道", platform: "bilibili", status: "active" },
+    { id: 102, uid: "654321", name: "Mock 科技区 UP", platform: "bilibili", status: "paused" }
+  ],
+  jobs: [
+    {
+      id: 201,
+      type: "check",
+      status: "failed",
+      payload: { video_id: 901 },
+      error_msg: "Mock 视频接口返回 412",
+      created_at: "2026-04-13T12:00:00Z",
+      updated_at: "2026-04-13T12:03:00Z",
+      finished_at: "2026-04-13T12:03:00Z"
+    },
+    {
+      id: 202,
+      type: "download",
+      status: "running",
+      payload: { video_id: 902 },
+      created_at: "2026-04-13T12:05:00Z",
+      updated_at: "2026-04-13T12:06:00Z",
+      started_at: "2026-04-13T12:06:00Z"
+    }
+  ],
+  videos: [
+    {
+      id: 901,
+      platform: "bilibili",
+      video_id: "BV1mock901",
+      creator_id: 101,
+      title: "Mock 绝版视频",
+      description: "",
+      publish_time: "2026-04-10T09:00:00Z",
+      duration: 360,
+      cover_url: "",
+      view_count: 120,
+      favorite_count: 20,
+      state: "OUT_OF_PRINT",
+      out_of_print_at: "2026-04-13T08:00:00Z",
+      stable_at: "",
+      last_check_at: "2026-04-13T12:00:00Z"
+    },
+    {
+      id: 902,
+      platform: "bilibili",
+      video_id: "BV1mock902",
+      creator_id: 101,
+      title: "Mock 普通视频",
+      description: "",
+      publish_time: "2026-04-11T09:00:00Z",
+      duration: 180,
+      cover_url: "",
+      view_count: 80,
+      favorite_count: 8,
+      state: "DOWNLOADED",
+      out_of_print_at: "",
+      stable_at: "",
+      last_check_at: "2026-04-13T11:00:00Z"
+    }
+  ],
+  system: {
+    health: "online",
+    mysql_ok: true,
+    auth_enabled: true,
+    active_jobs: 2,
+    risk_level: "中",
+    risk: {
+      level: "中",
+      active: false,
+      backoff_seconds: 0,
+      backoff_until: "",
+      last_hit_at: "2026-04-13T11:58:00Z",
+      last_reason: "/x/web-interface/view 返回风控码 -412"
+    },
+    last_job_at: "2026-04-13T12:06:00Z",
+    storage_root: "/data/archive",
+    cookie: {
+      configured: true,
+      status: "valid",
+      uname: "mock_user",
+      source: "cookie_file",
+      last_check_at: "2026-04-13T11:59:00Z",
+      last_reload_at: "2026-04-13T11:50:00Z",
+      last_check_result: "valid",
+      last_reload_result: "success",
+      last_error: ""
+    },
+    overview: {
+      active_creators: 1,
+      pending_jobs: 2,
+      rare_videos: 1
+    },
+    limits: {
+      global_qps: 2,
+      per_creator_qps: 1,
+      download_concurrency: 4,
+      check_concurrency: 8
+    },
+    scheduler: {
+      fetch_interval: "45m0s",
+      check_interval: "24h0m0s",
+      cleanup_interval: "24h0m0s",
+      check_stable_days: 30
+    }
+  },
+  storage: {
+    root_dir: "/data/archive",
+    used_bytes: 1717986918,
+    max_bytes: 2147483648,
+    safe_bytes: 1610612736,
+    usage_percent: 80,
+    file_count: 22,
+    hottest_bucket: "bilibili",
+    rare_videos: 1,
+    cleanup_rule: "绝版优先 -> 粉丝量 -> 播放量 -> 收藏量"
+  }
+});
+
+let state = initialState();
+
+function sendJSON(res, status, payload) {
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type"
+  });
+  res.end(JSON.stringify(payload));
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      if (!body) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(body));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function nextID(items) {
+  return items.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0) + 1;
+}
+
+const server = http.createServer(async (req, res) => {
+  if (!req.url) {
+    sendJSON(res, 404, { error: "not found" });
+    return;
+  }
+
+  if (req.method === "OPTIONS") {
+    sendJSON(res, 204, {});
+    return;
+  }
+
+  try {
+    if (req.method === "GET" && req.url === "/healthz") {
+      sendJSON(res, 200, { status: "ok" });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/__reset") {
+      state = initialState();
+      sendJSON(res, 200, { status: "ok" });
+      return;
+    }
+
+    if (req.method === "GET" && req.url.startsWith("/creators")) {
+      sendJSON(res, 200, { items: state.creators });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/creators") {
+      const payload = await readBody(req);
+      const creator = {
+        id: nextID(state.creators),
+        uid: String(payload.uid || ""),
+        name: String(payload.name || ""),
+        platform: String(payload.platform || "bilibili"),
+        status: String(payload.status || "active")
+      };
+      state.creators.unshift(creator);
+      state.system.overview.active_creators = state.creators.filter((item) => item.status === "active").length;
+      sendJSON(res, 200, creator);
+      return;
+    }
+
+    if (req.method === "GET" && req.url.startsWith("/jobs")) {
+      sendJSON(res, 200, { items: state.jobs });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/jobs") {
+      const payload = await readBody(req);
+      const now = new Date().toISOString();
+      const job = {
+        id: nextID(state.jobs),
+        type: String(payload.type || "fetch"),
+        status: "queued",
+        payload: { origin: "mock_api" },
+        created_at: now,
+        updated_at: now
+      };
+      state.jobs.unshift(job);
+      state.system.active_jobs += 1;
+      state.system.overview.pending_jobs += 1;
+      state.system.last_job_at = now;
+      sendJSON(res, 200, { status: "queued", type: job.type });
+      return;
+    }
+
+    if (req.method === "GET" && req.url.startsWith("/videos")) {
+      sendJSON(res, 200, { items: state.videos });
+      return;
+    }
+
+    if (req.method === "GET" && req.url === "/system/status") {
+      sendJSON(res, 200, state.system);
+      return;
+    }
+
+    if (req.method === "GET" && req.url === "/storage/stats") {
+      sendJSON(res, 200, state.storage);
+      return;
+    }
+
+    sendJSON(res, 404, { error: "not found" });
+  } catch (error) {
+    sendJSON(res, 500, { error: error instanceof Error ? error.message : "unknown error" });
+  }
+});
+
+server.listen(port, "127.0.0.1", () => {
+  console.log(`mock api listening on http://127.0.0.1:${port}`);
+});

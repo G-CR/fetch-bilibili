@@ -179,3 +179,15 @@ func (r *creatorRepo) ListActiveAfter(ctx context.Context, lastID int64, limit i
 	}
 	return out, nil
 }
+
+func (r *creatorRepo) CountActive(ctx context.Context) (int64, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM creators WHERE status = 'active'
+	`)
+
+	var count int64
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}

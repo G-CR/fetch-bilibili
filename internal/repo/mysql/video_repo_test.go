@@ -238,6 +238,66 @@ func TestVideoListForCheckQueryError(t *testing.T) {
 	}
 }
 
+func TestVideoListCleanupCandidates(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	rows := sqlmock.NewRows([]string{
+		"video_id", "source_video_id", "platform", "title", "state", "creator_id", "creator_name",
+		"follower_count", "view_count", "favorite_count", "file_id", "file_path", "file_size_bytes",
+	}).AddRow(
+		int64(1), "BV1xx411c7mD", "bilibili", "稀有视频", "DOWNLOADED", int64(2), "测试博主",
+		int64(1000), int64(2000), int64(30), int64(9), "/data/bilibili/BV1xx411c7mD.mp4", int64(123),
+	)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT v.id AS video_id")).
+		WithArgs(10).
+		WillReturnRows(rows)
+
+	list, err := repoImpl.Videos().ListCleanupCandidates(context.Background(), repo.CleanupCandidateFilter{
+		Limit:             10,
+		IncludeOutOfPrint: false,
+	})
+	if err != nil {
+		t.Fatalf("ListCleanupCandidates error: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 candidate")
+	}
+	if list[0].SourceVideoID != "BV1xx411c7mD" || list[0].FileID != 9 {
+		t.Fatalf("unexpected candidate: %+v", list[0])
+	}
+}
+
+func TestVideoListCleanupCandidatesIncludeOutOfPrint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT v.id AS video_id")).
+		WithArgs(5).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"video_id", "source_video_id", "platform", "title", "state", "creator_id", "creator_name",
+			"follower_count", "view_count", "favorite_count", "file_id", "file_path", "file_size_bytes",
+		}))
+
+	if _, err := repoImpl.Videos().ListCleanupCandidates(context.Background(), repo.CleanupCandidateFilter{
+		Limit:             5,
+		IncludeOutOfPrint: true,
+	}); err != nil {
+		t.Fatalf("ListCleanupCandidates error: %v", err)
+	}
+}
+
 func TestVideoUpsertDefaults(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -343,6 +403,70 @@ func TestVideoUpdateCheckStatusWithTimes(t *testing.T) {
 	if err := repoImpl.Videos().UpdateCheckStatus(context.Background(), 2, "OUT_OF_PRINT", &out, &stable, now); err != nil {
 		t.Fatalf("update check status error: %v", err)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestVideoListRecent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	created := time.Now().Add(-time.Hour)
+	updated := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "platform", "video_id", "creator_id", "title", "description", "publish_time", "duration", "cover_url",
+		"view_count", "favorite_count", "state", "out_of_print_at", "stable_at", "last_check_at", "created_at", "updated_at",
+	}).AddRow(9, "bilibili", "BV1", 1, "t1", "desc", created, 10, "cover", 1, 2, "OUT_OF_PRINT", created, nil, created, created, updated)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, platform, video_id, creator_id, title, description, publish_time, duration, cover_url, view_count, favorite_count, state, out_of_print_at, stable_at, last_check_at, created_at, updated_at FROM videos")).
+		WithArgs(int64(1), "OUT_OF_PRINT", 5).
+		WillReturnRows(rows)
+
+	list, err := repoImpl.Videos().ListRecent(context.Background(), repo.VideoListFilter{
+		Limit:     5,
+		CreatorID: 1,
+		State:     "OUT_OF_PRINT",
+	})
+	if err != nil {
+		t.Fatalf("list recent error: %v", err)
+	}
+	if len(list) != 1 || list[0].VideoID != "BV1" {
+		t.Fatalf("unexpected list result")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestVideoCountByState(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	rows := sqlmock.NewRows([]string{"count"}).AddRow(7)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM videos WHERE state = ?")).
+		WithArgs("OUT_OF_PRINT").
+		WillReturnRows(rows)
+
+	count, err := repoImpl.Videos().CountByState(context.Background(), "OUT_OF_PRINT")
+	if err != nil {
+		t.Fatalf("count by state error: %v", err)
+	}
+	if count != 7 {
+		t.Fatalf("expected count 7, got %d", count)
+	}
+
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
 	}

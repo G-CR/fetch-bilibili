@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,15 @@ func (r *jobRepo) Enqueue(ctx context.Context, job repo.Job) (int64, error) {
 			return 0, err
 		}
 	}
+	if status == jobs.StatusQueued || status == jobs.StatusRunning {
+		exists, err := r.hasActiveJob(ctx, job.Type, job.Payload)
+		if err != nil {
+			return 0, err
+		}
+		if exists {
+			return 0, jobs.ErrJobAlreadyActive
+		}
+	}
 
 	var notBefore any
 	if !job.NotBefore.IsZero() {
@@ -44,6 +54,24 @@ func (r *jobRepo) Enqueue(ctx context.Context, job repo.Job) (int64, error) {
 		return 0, err
 	}
 	return id, nil
+}
+
+func (r *jobRepo) hasActiveJob(ctx context.Context, jobType string, payload map[string]any) (bool, error) {
+	query := "SELECT COUNT(*) FROM jobs WHERE type = ? AND status IN (?,?)"
+	args := []any{jobType, jobs.StatusQueued, jobs.StatusRunning}
+	if jobType == jobs.TypeDownload {
+		if videoID, ok := payloadInt64(payload, "video_id"); ok && videoID > 0 {
+			query += " AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.video_id')) AS UNSIGNED) = ?"
+			args = append(args, videoID)
+		}
+	}
+
+	row := r.db.QueryRowContext(ctx, query, args...)
+	var count int64
+	if err := row.Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (r *jobRepo) FetchQueued(ctx context.Context, limit int) ([]repo.Job, error) {
@@ -153,9 +181,149 @@ func (r *jobRepo) UpdateStatus(ctx context.Context, id int64, status string, err
 		UPDATE jobs
 		SET status = ?,
 			error_message = ?,
-			finished_at = CASE WHEN ? IN ('success','failed') THEN NOW() ELSE finished_at END,
+			started_at = CASE WHEN ? = 'queued' THEN NULL ELSE started_at END,
+			finished_at = CASE
+				WHEN ? = 'queued' THEN NULL
+				WHEN ? IN ('success','failed') THEN NOW()
+				ELSE finished_at
+			END,
 			updated_at = NOW()
 		WHERE id = ?
-	`, status, msg, status, id)
+	`, status, msg, status, status, status, id)
 	return err
+}
+
+func (r *jobRepo) ListRecent(ctx context.Context, filter repo.JobListFilter) ([]repo.Job, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	conditions := make([]string, 0, 2)
+	args := make([]any, 0, 3)
+	if filter.Status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if filter.Type != "" {
+		conditions = append(conditions, "type = ?")
+		args = append(args, filter.Type)
+	}
+
+	query := `
+		SELECT id, type, status, payload_json, error_message, not_before, started_at, finished_at, created_at, updated_at
+		FROM jobs
+	`
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []repo.Job
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *jobRepo) CountByStatuses(ctx context.Context, statuses []string) (int64, error) {
+	if len(statuses) == 0 {
+		return 0, nil
+	}
+
+	placeholders := make([]string, 0, len(statuses))
+	args := make([]any, 0, len(statuses))
+	for _, status := range statuses {
+		placeholders = append(placeholders, "?")
+		args = append(args, status)
+	}
+
+	query := fmt.Sprintf(
+		"SELECT COUNT(*) FROM jobs WHERE status IN (%s)",
+		strings.Join(placeholders, ","),
+	)
+	row := r.db.QueryRowContext(ctx, query, args...)
+
+	var count int64
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func scanJob(scanner interface {
+	Scan(dest ...any) error
+}) (repo.Job, error) {
+	var (
+		job                              repo.Job
+		payload                          []byte
+		notBefore, startedAt, finishedAt sql.NullTime
+		createdAt, updatedAt             time.Time
+		errMsg                           sql.NullString
+	)
+	if err := scanner.Scan(&job.ID, &job.Type, &job.Status, &payload, &errMsg, &notBefore, &startedAt, &finishedAt, &createdAt, &updatedAt); err != nil {
+		return repo.Job{}, err
+	}
+	job.CreatedAt = createdAt
+	job.UpdatedAt = updatedAt
+	if errMsg.Valid {
+		job.ErrorMsg = errMsg.String
+	}
+	if notBefore.Valid {
+		job.NotBefore = notBefore.Time
+	}
+	if startedAt.Valid {
+		job.StartedAt = startedAt.Time
+	}
+	if finishedAt.Valid {
+		job.FinishedAt = finishedAt.Time
+	}
+	if len(payload) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(payload, &m); err != nil {
+			return repo.Job{}, err
+		}
+		job.Payload = m
+	}
+	return job, nil
+}
+
+func payloadInt64(payload map[string]any, key string) (int64, bool) {
+	if payload == nil {
+		return 0, false
+	}
+	raw, ok := payload[key]
+	if !ok {
+		return 0, false
+	}
+	switch value := raw.(type) {
+	case int64:
+		return value, true
+	case int:
+		return int64(value), true
+	case float64:
+		return int64(value), true
+	case json.Number:
+		n, err := value.Int64()
+		return n, err == nil
+	case string:
+		n, err := strconv.ParseInt(value, 10, 64)
+		return n, err == nil
+	default:
+		return 0, false
+	}
 }

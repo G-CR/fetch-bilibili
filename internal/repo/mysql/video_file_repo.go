@@ -25,3 +25,45 @@ func (r *videoFileRepo) Create(ctx context.Context, f repo.VideoFile) (int64, er
 	}
 	return id, nil
 }
+
+func (r *videoFileRepo) DeleteByID(ctx context.Context, id int64) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `
+		DELETE FROM video_files
+		WHERE id = ?
+	`, id)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
+}
+
+func (r *videoFileRepo) DeleteByVideoID(ctx context.Context, videoID int64) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `
+		DELETE FROM video_files
+		WHERE video_id = ?
+	`, videoID)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
+}
+
+func (r *videoFileRepo) CountByVideoID(ctx context.Context, videoID int64) (int64, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM video_files WHERE video_id = ?
+	`, videoID)
+
+	var count int64
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}

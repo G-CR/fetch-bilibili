@@ -1,5 +1,7 @@
-# syntax=docker/dockerfile:1
-FROM golang:1.22-alpine AS build
+ARG GO_IMAGE=m.daocloud.io/docker.io/library/golang:1.22-alpine
+ARG ALPINE_IMAGE=m.daocloud.io/docker.io/library/alpine:3.20
+
+FROM ${GO_IMAGE} AS build
 
 WORKDIR /src
 
@@ -12,7 +14,7 @@ COPY . .
 # 构建可执行文件
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server
 
-FROM alpine:3.20
+FROM ${ALPINE_IMAGE}
 
 RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app

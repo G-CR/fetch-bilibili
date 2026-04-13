@@ -1,5 +1,7 @@
 package jobs
 
+import "errors"
+
 const (
 	TypeFetch    = "fetch"
 	TypeDownload = "download"
@@ -13,3 +15,5 @@ const (
 	StatusSuccess = "success"
 	StatusFailed  = "failed"
 )
+
+var ErrJobAlreadyActive = errors.New("活动任务已存在")

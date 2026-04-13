@@ -81,6 +81,7 @@ type BilibiliConfig struct {
 
 type MySQLConfig struct {
 	DSN             string        `yaml:"dsn"`
+	AutoMigrate     bool          `yaml:"auto_migrate"`
 	MaxOpenConns    int           `yaml:"max_open_conns"`
 	MaxIdleConns    int           `yaml:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
@@ -141,6 +142,7 @@ func Default() Config {
 			RiskBackoffJitter:   0.3,
 		},
 		MySQL: MySQLConfig{
+			AutoMigrate:     true,
 			MaxOpenConns:    20,
 			MaxIdleConns:    10,
 			ConnMaxLifetime: 30 * time.Minute,

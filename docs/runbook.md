@@ -14,8 +14,9 @@
 ```sql
 CREATE DATABASE fetch DEFAULT CHARSET utf8mb4;
 ```
-- 执行迁移：使用 `docs/mysql-schema.md` 中的建表 SQL（临时）
-- 后续建议用迁移工具统一管理（见 `docs/mysql-schema.md`）
+- 表结构迁移由服务启动自动执行，默认开启 `mysql.auto_migrate: true`。
+- 当前权威 schema 来源：`migrations/00001_init.sql`。
+- 若关闭 `mysql.auto_migrate`，需确保外部发布流程已完成同版本迁移后再启动服务。
 
 ## 4. 配置文件
 复制并修改：
@@ -25,6 +26,7 @@ configs/config.example.yaml -> configs/config.yaml
 关键字段：
 - `storage.root_dir`
 - `mysql.dsn`
+- `mysql.auto_migrate`（默认 `true`，建议保持开启）
 - `scheduler.check_stable_days`（默认 30 天）
 - `scheduler.check_interval`（默认 24h）
 - `creators.file`（博主列表文件路径，可用 `configs/creators.example.yaml` 参考）
@@ -34,6 +36,10 @@ configs/config.example.yaml -> configs/config.yaml
 ```bash
 go run ./cmd/server
 ```
+
+预期日志：
+- 出现「数据库迁移完成」表示 schema 已完成自动收敛。
+- 首次启动后无需再手工执行建表 SQL。
 
 ## 6. 运行检查
 - 服务启动日志无错误。

@@ -1,0 +1,24 @@
+{
+  "name": "fetch-bilibili-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:e2e": "node ./scripts/e2e/run-e2e.mjs",
+    "test:state": "node ./scripts/test-dashboard-state.mjs",
+    "test:smoke": "node ./scripts/smoke-render.mjs",
+    "test:vite-config": "node ./scripts/check-vite-react-plugin.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.19"
+  }
+}

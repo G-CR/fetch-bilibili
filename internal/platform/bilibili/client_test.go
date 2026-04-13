@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +17,18 @@ import (
 
 	"fetch-bilibili/internal/config"
 )
+
+func newIPv4TestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp4: %v", err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	server.Listener = listener
+	server.Start()
+	return server
+}
 
 func TestListVideosAndCheckAvailable(t *testing.T) {
 	imgKey := "7cd084941338484aae1ad9425b84077c"
@@ -43,7 +56,7 @@ func TestListVideosAndCheckAvailable(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/x/web-interface/nav":
 			_ = json.NewEncoder(w).Encode(navResp)
@@ -120,7 +133,7 @@ func TestListVideosAndCheckAvailable(t *testing.T) {
 }
 
 func TestCheckAvailableUnavailable(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(viewResp{Code: -404, Message: "not found"})
 	}))
 	defer server.Close()
@@ -136,7 +149,7 @@ func TestCheckAvailableUnavailable(t *testing.T) {
 }
 
 func TestCheckAvailableForbidden(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(viewResp{Code: -403, Message: "forbidden"})
 	}))
 	defer server.Close()
@@ -175,7 +188,7 @@ func TestNormalizeAID(t *testing.T) {
 
 func TestCheckAvailableUsesAID(t *testing.T) {
 	called := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q, _ := url.ParseQuery(r.URL.RawQuery)
 		if q.Get("aid") != "123" {
 			t.Fatalf("expected aid query")
@@ -239,7 +252,7 @@ func TestTrimFileKey(t *testing.T) {
 
 func TestCheckAvailableRiskAndUnknown(t *testing.T) {
 	var calls int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&calls, 1) == 1 {
 			_ = json.NewEncoder(w).Encode(viewResp{Code: -412, Message: "risk"})
 			return
@@ -263,7 +276,7 @@ func TestWbiKeyCache(t *testing.T) {
 	subKey := "4932caff0ff746eab6f01bf08b70ac45"
 	mixinKey := calcMixinKey(imgKey, subKey)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/x/web-interface/nav":
 			atomic.AddInt32(&navCalls, 1)
@@ -326,7 +339,7 @@ func TestWbiKeyCache(t *testing.T) {
 
 func TestCookieHeader(t *testing.T) {
 	cookie := "SESSDATA=abc"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Cookie") != cookie {
 			t.Fatalf("expected cookie header")
 		}
@@ -342,7 +355,7 @@ func TestCookieHeader(t *testing.T) {
 }
 
 func TestSESSDATAHeader(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Cookie") != "SESSDATA=token" {
 			t.Fatalf("expected sessdata cookie header")
 		}
@@ -358,7 +371,7 @@ func TestSESSDATAHeader(t *testing.T) {
 }
 
 func TestReloadAuthFromFiles(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Cookie") != "SESSDATA=filetoken" {
 			t.Fatalf("expected cookie from file")
 		}
@@ -386,7 +399,7 @@ func TestReloadAuthFromFiles(t *testing.T) {
 }
 
 func TestCheckAuth(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := navResp{Code: 0}
 		resp.Data.IsLogin = true
 		resp.Data.Mid = 123
@@ -407,7 +420,7 @@ func TestCheckAuth(t *testing.T) {
 
 func TestResolveUIDByNameWithCache(t *testing.T) {
 	var calls int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/x/web-interface/search/type" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -449,7 +462,7 @@ func TestResolveUIDByNameWithCache(t *testing.T) {
 
 func TestResolveUIDNumeric(t *testing.T) {
 	var calls int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -469,7 +482,7 @@ func TestResolveUIDNumeric(t *testing.T) {
 }
 
 func TestResolveUIDNoResult(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := userSearchResp{Code: 0}
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
@@ -484,7 +497,7 @@ func TestResolveUIDNoResult(t *testing.T) {
 func TestDownload(t *testing.T) {
 	content := []byte("video")
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/x/web-interface/view":
 			resp := viewResp{Code: 0}
@@ -527,7 +540,7 @@ func TestDownload(t *testing.T) {
 
 func TestDownloadPlayURLFailure(t *testing.T) {
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/x/web-interface/view":
 			resp := viewResp{Code: 0}
@@ -550,7 +563,7 @@ func TestDownloadPlayURLFailure(t *testing.T) {
 
 func TestDownloadNoDurl(t *testing.T) {
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/x/web-interface/view":
 			resp := viewResp{Code: 0}
@@ -581,7 +594,7 @@ func TestDownloadInvalidID(t *testing.T) {
 func TestDownloadBackupURL(t *testing.T) {
 	content := []byte("backup")
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/x/web-interface/view":
 			resp := viewResp{Code: 0}
@@ -620,7 +633,7 @@ func TestDownloadBackupURL(t *testing.T) {
 
 func TestDownloadEmptyContentReturnsSize(t *testing.T) {
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/x/web-interface/view":
 			resp := viewResp{Code: 0}
@@ -657,7 +670,7 @@ func TestDownloadEmptyContentReturnsSize(t *testing.T) {
 
 func TestDownloadMissingCID(t *testing.T) {
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/x/web-interface/view" {
 			resp := viewResp{Code: 0}
 			_ = json.NewEncoder(w).Encode(resp)
@@ -675,7 +688,7 @@ func TestDownloadMissingCID(t *testing.T) {
 
 func TestDownloadPrimaryFailNoBackup(t *testing.T) {
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/x/web-interface/view":
 			resp := viewResp{Code: 0}
@@ -737,7 +750,7 @@ func TestWaitRiskCanceled(t *testing.T) {
 }
 
 func TestCheckAuthHTTPRiskStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusPreconditionFailed)
 	}))
 	defer server.Close()
@@ -771,7 +784,7 @@ func TestRiskBackoffJitter(t *testing.T) {
 }
 
 func TestListVideosRiskCode(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/x/web-interface/nav" {
 			resp := navResp{Code: -412, Message: "risk"}
 			_ = json.NewEncoder(w).Encode(resp)
@@ -789,7 +802,7 @@ func TestListVideosRiskCode(t *testing.T) {
 
 func TestDownloadForbidden(t *testing.T) {
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/x/web-interface/view":
 			resp := viewResp{Code: 0}
@@ -816,5 +829,71 @@ func TestDownloadForbidden(t *testing.T) {
 	client := New(config.BilibiliConfig{}, nil, WithBaseURL(server.URL))
 	if _, err := client.Download(context.Background(), "BV1xx", filepath.Join(t.TempDir(), "v1.mp4")); err == nil {
 		t.Fatalf("expected error")
+	}
+}
+
+func TestRuntimeStatusTracksCookieSourceAndReload(t *testing.T) {
+	dir := t.TempDir()
+	cookieFile := filepath.Join(dir, "cookie.txt")
+	if err := os.WriteFile(cookieFile, []byte("SESSDATA=filetoken"), 0o644); err != nil {
+		t.Fatalf("write cookie file: %v", err)
+	}
+
+	client := New(config.BilibiliConfig{CookieFile: cookieFile}, nil)
+	status := client.RuntimeStatus()
+	if !status.CookieConfigured {
+		t.Fatalf("expected cookie configured")
+	}
+	if status.CookieSource != "cookie_file" {
+		t.Fatalf("unexpected cookie source: %s", status.CookieSource)
+	}
+
+	updated, err := client.ReloadAuth()
+	if err != nil {
+		t.Fatalf("ReloadAuth error: %v", err)
+	}
+	if !updated {
+		t.Fatalf("expected updated")
+	}
+
+	status = client.RuntimeStatus()
+	if status.LastReloadResult != "success" {
+		t.Fatalf("unexpected reload result: %s", status.LastReloadResult)
+	}
+	if status.LastReloadAt.IsZero() {
+		t.Fatalf("expected last reload at")
+	}
+}
+
+func TestRuntimeStatusTracksCheckAndRisk(t *testing.T) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := navResp{Code: -412, Message: "risk"}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := New(config.BilibiliConfig{RiskBackoffBase: 10 * time.Millisecond, RiskBackoffJitter: 0}, nil, WithBaseURL(server.URL))
+	if _, err := client.CheckAuth(context.Background()); err == nil {
+		t.Fatalf("expected error")
+	}
+
+	status := client.RuntimeStatus()
+	if status.LastCheckResult != "error" {
+		t.Fatalf("unexpected check result: %s", status.LastCheckResult)
+	}
+	if status.LastCheckAt.IsZero() {
+		t.Fatalf("expected last check at")
+	}
+	if status.LastError == "" {
+		t.Fatalf("expected last error")
+	}
+	if status.RiskUntil.IsZero() {
+		t.Fatalf("expected risk until")
+	}
+	if status.LastRiskAt.IsZero() {
+		t.Fatalf("expected last risk at")
+	}
+	if status.LastRiskReason == "" {
+		t.Fatalf("expected last risk reason")
 	}
 }

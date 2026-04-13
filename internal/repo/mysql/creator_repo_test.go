@@ -292,3 +292,29 @@ func TestCreatorListActiveDefaultLimit(t *testing.T) {
 		t.Fatalf("expectations: %v", err)
 	}
 }
+
+func TestCreatorCountActive(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	rows := sqlmock.NewRows([]string{"count"}).AddRow(3)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM creators WHERE status = 'active'")).
+		WillReturnRows(rows)
+
+	count, err := repoImpl.Creators().CountActive(context.Background())
+	if err != nil {
+		t.Fatalf("count active error: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected count 3, got %d", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}

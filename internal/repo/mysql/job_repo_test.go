@@ -22,6 +22,9 @@ func TestJobEnqueue(t *testing.T) {
 
 	repoImpl := New(db)
 
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM jobs WHERE type = ? AND status IN (?,?)")).
+		WithArgs(jobs.TypeFetch, jobs.StatusQueued, jobs.StatusRunning).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO jobs")).
 		WithArgs(jobs.TypeFetch, jobs.StatusQueued, sqlmock.AnyArg(), nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -92,7 +95,7 @@ func TestJobUpdateStatus(t *testing.T) {
 	repoImpl := New(db)
 
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE jobs")).
-		WithArgs(jobs.StatusSuccess, nil, jobs.StatusSuccess, 1).
+		WithArgs(jobs.StatusSuccess, nil, jobs.StatusSuccess, jobs.StatusSuccess, jobs.StatusSuccess, 1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := repoImpl.Jobs().UpdateStatus(context.Background(), 1, jobs.StatusSuccess, ""); err != nil {
@@ -233,11 +236,78 @@ func TestJobUpdateStatusWithErrorMsg(t *testing.T) {
 	repoImpl := New(db)
 
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE jobs")).
-		WithArgs(jobs.StatusFailed, "boom", jobs.StatusFailed, 1).
+		WithArgs(jobs.StatusFailed, "boom", jobs.StatusFailed, jobs.StatusFailed, jobs.StatusFailed, 1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := repoImpl.Jobs().UpdateStatus(context.Background(), 1, jobs.StatusFailed, "boom"); err != nil {
 		t.Fatalf("update status error: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestJobListRecent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	created := time.Now().Add(-time.Minute)
+	updated := time.Now()
+	started := created.Add(10 * time.Second)
+	rows := sqlmock.NewRows([]string{
+		"id", "type", "status", "payload_json", "error_message", "not_before", "started_at", "finished_at", "created_at", "updated_at",
+	}).AddRow(2, jobs.TypeFetch, jobs.StatusRunning, []byte(`{"video_id":1}`), nil, nil, started, nil, created, updated)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, type, status, payload_json, error_message, not_before, started_at, finished_at, created_at, updated_at FROM jobs")).
+		WithArgs(jobs.StatusRunning, jobs.TypeFetch, 5).
+		WillReturnRows(rows)
+
+	list, err := repoImpl.Jobs().ListRecent(context.Background(), repo.JobListFilter{
+		Limit:  5,
+		Status: jobs.StatusRunning,
+		Type:   jobs.TypeFetch,
+	})
+	if err != nil {
+		t.Fatalf("list recent error: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != 2 {
+		t.Fatalf("unexpected list result")
+	}
+	if list[0].Payload["video_id"] != float64(1) {
+		t.Fatalf("expected payload parsed")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestJobCountByStatuses(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	rows := sqlmock.NewRows([]string{"count"}).AddRow(4)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM jobs WHERE status IN (?,?)")).
+		WithArgs(jobs.StatusQueued, jobs.StatusRunning).
+		WillReturnRows(rows)
+
+	count, err := repoImpl.Jobs().CountByStatuses(context.Background(), []string{jobs.StatusQueued, jobs.StatusRunning})
+	if err != nil {
+		t.Fatalf("count by statuses error: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("expected count 4, got %d", count)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

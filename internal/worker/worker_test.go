@@ -49,6 +49,14 @@ func (s *stubRepo) UpdateStatus(ctx context.Context, id int64, status string, er
 	return s.updateErr
 }
 
+func (s *stubRepo) ListRecent(ctx context.Context, filter repo.JobListFilter) ([]repo.Job, error) {
+	return nil, nil
+}
+
+func (s *stubRepo) CountByStatuses(ctx context.Context, statuses []string) (int64, error) {
+	return 0, nil
+}
+
 type stubHandler struct {
 	err error
 }

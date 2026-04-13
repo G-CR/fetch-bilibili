@@ -13,6 +13,7 @@ type CreatorRepository interface {
 	FindByID(ctx context.Context, id int64) (Creator, error)
 	ListActive(ctx context.Context, limit int) ([]Creator, error)
 	ListActiveAfter(ctx context.Context, lastID int64, limit int) ([]Creator, error)
+	CountActive(ctx context.Context) (int64, error)
 }
 
 type VideoRepository interface {
@@ -20,16 +21,24 @@ type VideoRepository interface {
 	UpdateState(ctx context.Context, id int64, state string) error
 	FindByID(ctx context.Context, id int64) (Video, error)
 	ListForCheck(ctx context.Context, limit int) ([]Video, error)
+	ListRecent(ctx context.Context, filter VideoListFilter) ([]Video, error)
+	ListCleanupCandidates(ctx context.Context, filter CleanupCandidateFilter) ([]CleanupCandidate, error)
+	CountByState(ctx context.Context, state string) (int64, error)
 	UpdateCheckStatus(ctx context.Context, id int64, state string, outOfPrintAt *time.Time, stableAt *time.Time, lastCheckAt time.Time) error
 }
 
 type VideoFileRepository interface {
 	Create(ctx context.Context, f VideoFile) (int64, error)
+	DeleteByID(ctx context.Context, id int64) (int64, error)
+	DeleteByVideoID(ctx context.Context, videoID int64) (int64, error)
+	CountByVideoID(ctx context.Context, videoID int64) (int64, error)
 }
 
 type JobRepository interface {
 	Enqueue(ctx context.Context, job Job) (int64, error)
 	FetchQueued(ctx context.Context, limit int) ([]Job, error)
+	ListRecent(ctx context.Context, filter JobListFilter) ([]Job, error)
+	CountByStatuses(ctx context.Context, statuses []string) (int64, error)
 	UpdateStatus(ctx context.Context, id int64, status string, errMsg string) error
 }
 
