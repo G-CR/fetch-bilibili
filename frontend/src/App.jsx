@@ -368,9 +368,10 @@ function App() {
         <header className="command-bar">
           <div>
             <p className="eyebrow">总览驾驶舱</p>
-            <h2>抓取、下架检查、归档沉淀都用真实接口联动</h2>
+            <h2>绝版视频库驾驶舱</h2>
             <p className="command-copy">
-              API 模式会读取博主、任务、视频、系统状态和存储统计；本地模式保留为演示回退。
+              监控博主更新、下架检查、下载与归档沉淀；
+              {state.mode === "api" ? "当前运行在 API 真实联动模式。" : "当前运行在本地演示模式。"}
             </p>
           </div>
           <div className="command-actions">

@@ -8,11 +8,13 @@
 - `Dockerfile`：多阶段构建 Go 二进制。
 - `docker-compose.yml`：编排 MySQL、后端应用与前端控制台。
 - `.env.example`：国内镜像源与镜像标签示例。
-- `configs/config.example.yaml`：容器默认配置示例。
+- `configs/config.example.yaml`：配置模板。
+- `configs/config.yaml`：容器默认运行配置。
 
 ## 3. 构建镜像
 ```bash
 cp .env.example .env
+cp configs/config.example.yaml configs/config.yaml
 docker build -t fetch-bilibili:dev .
 ```
 
@@ -27,6 +29,7 @@ docker compose up -d --build
 - MySQL：`localhost:3307`
 
 ## 5. 配置与挂载
+- 默认要求先准备 `configs/config.yaml`；`configs/config.example.yaml` 只作为模板，不直接挂载运行。
 - 应用配置：默认映射 `/app/config.yaml`。
 - 视频存储目录：`./data/bilibili` → `/data/bilibili`。
 - MySQL 数据目录：`./data/mysql` → `/var/lib/mysql`。
@@ -39,6 +42,7 @@ docker compose up -d --build
 ### 5.1 前端构建后再启动容器
 ```bash
 cp .env.example .env
+cp configs/config.example.yaml configs/config.yaml
 
 cd frontend
 npm install --registry=https://registry.npmmirror.com
@@ -56,7 +60,7 @@ docker compose up -d --build
 ```yaml
   app:
     volumes:
-      - ./configs/config.example.yaml:/app/config.yaml:ro
+      - ./configs/config.yaml:/app/config.yaml:ro
       - ./secrets/bilibili_cookie.txt:/app/secrets/bilibili_cookie.txt:ro
     environment:
       FETCH_CONFIG: /app/config.yaml
@@ -72,8 +76,8 @@ bilibili:
 ```yaml
   app:
     volumes:
-      - ./configs/config.example.yaml:/app/config.yaml:ro
-      - ./configs/creators.example.yaml:/app/creators.yaml:ro
+      - ./configs/config.yaml:/app/config.yaml:ro
+      - ./configs/creators.yaml:/app/creators.yaml:ro
 ```
 
 并在配置文件中指向容器内路径：
@@ -152,7 +156,7 @@ open http://localhost:5173
 
 ## 9. 常见问题
 - 启动后无法连接 MySQL：
-  - 确认 `configs/config.example.yaml` 中的 DSN 与 `docker-compose.yml` 一致。
+  - 确认 `configs/config.yaml` 中的 DSN 与 `docker-compose.yml` 一致。
 - 前端页面打不开：
   - 确认 `frontend` 服务已启动并监听 `5173` 端口。
 - 前端能打开但无法联动：

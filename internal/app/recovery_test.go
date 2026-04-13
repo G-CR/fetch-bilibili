@@ -203,7 +203,7 @@ func TestRecoverRuntimeStateResetsDownloadingVideoToNew(t *testing.T) {
 
 func TestRecoverRuntimeStateMarksDownloadedWhenFileExists(t *testing.T) {
 	rootDir := t.TempDir()
-	dst := filepath.Join(rootDir, "bilibili", "BV-downloaded.mp4")
+	dst := storageVideoPath(rootDir, "bilibili", "BV-downloaded")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestRecoverRuntimeStateResetsDownloadedVideoToNewWhenFileMissing(t *testing
 
 func TestRecoverRuntimeStateResetsDownloadedVideoToNewWhenFileEmpty(t *testing.T) {
 	rootDir := t.TempDir()
-	dst := filepath.Join(rootDir, "bilibili", "BV-empty.mp4")
+	dst := storageVideoPath(rootDir, "bilibili", "BV-empty")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

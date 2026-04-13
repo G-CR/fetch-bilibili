@@ -605,7 +605,7 @@ func TestJobPayloadInt64(t *testing.T) {
 
 func TestStorageVideoPathDefaultsPlatform(t *testing.T) {
 	got := storageVideoPath("/data/archive", "", "BV1")
-	want := "/data/archive/bilibili/BV1.mp4"
+	want := "/data/archive/store/bilibili/BV1.mp4"
 	if got != want {
 		t.Fatalf("expected %s, got %s", want, got)
 	}
