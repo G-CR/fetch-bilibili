@@ -651,6 +651,102 @@ func TestDownload(t *testing.T) {
 	}
 }
 
+func TestDownloadDashMergesAudioAndVideo(t *testing.T) {
+	ffmpegDir := t.TempDir()
+	ffmpegPath := filepath.Join(ffmpegDir, "ffmpeg")
+	ffmpegScript := `#!/bin/sh
+video=""
+audio=""
+expect_input=0
+out=""
+for arg in "$@"; do
+  if [ "$expect_input" = "1" ]; then
+    if [ -z "$video" ]; then
+      video="$arg"
+    else
+      audio="$arg"
+    fi
+    expect_input=0
+    continue
+  fi
+  if [ "$arg" = "-i" ]; then
+    expect_input=1
+    continue
+  fi
+  out="$arg"
+done
+cat "$video" "$audio" > "$out"
+`
+	if err := os.WriteFile(ffmpegPath, []byte(ffmpegScript), 0o755); err != nil {
+		t.Fatalf("write fake ffmpeg: %v", err)
+	}
+	t.Setenv("PATH", ffmpegDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	videoContent := []byte("video-")
+	audioContent := []byte("audio")
+	var server *httptest.Server
+	server = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/x/web-interface/view":
+			resp := viewResp{Code: 0}
+			resp.Data.CID = 123
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/x/player/playurl":
+			resp := struct {
+				Code int `json:"code"`
+				Data struct {
+					Dash struct {
+						Video []struct {
+							BaseURL string `json:"baseUrl"`
+						} `json:"video"`
+						Audio []struct {
+							BaseURL string `json:"baseUrl"`
+						} `json:"audio"`
+					} `json:"dash"`
+				} `json:"data"`
+			}{Code: 0}
+			resp.Data.Dash.Video = []struct {
+				BaseURL string `json:"baseUrl"`
+			}{
+				{BaseURL: server.URL + "/video.m4s"},
+			}
+			resp.Data.Dash.Audio = []struct {
+				BaseURL string `json:"baseUrl"`
+			}{
+				{BaseURL: server.URL + "/audio.m4s"},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/video.m4s":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(videoContent)
+		case "/audio.m4s":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(audioContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dst := filepath.Join(t.TempDir(), "dash.mp4")
+	client := New(config.BilibiliConfig{}, nil, WithBaseURL(server.URL))
+
+	n, err := client.Download(context.Background(), "BV1xx", dst)
+	if err != nil {
+		t.Fatalf("download error: %v", err)
+	}
+	if n != int64(len(videoContent)+len(audioContent)) {
+		t.Fatalf("unexpected size: %d", n)
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read merged file: %v", err)
+	}
+	if string(data) != "video-audio" {
+		t.Fatalf("unexpected merged content: %q", string(data))
+	}
+}
+
 func TestDownloadPlayURLFailure(t *testing.T) {
 	var server *httptest.Server
 	server = newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

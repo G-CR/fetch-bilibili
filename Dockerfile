@@ -16,6 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server
 
 FROM ${ALPINE_IMAGE}
 
+RUN apk add --no-cache ffmpeg
 RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
 

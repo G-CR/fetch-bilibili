@@ -1,6 +1,7 @@
 package bilibili
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -359,35 +362,35 @@ func (c *Client) ResolveName(ctx context.Context, uid string) (string, error) {
 }
 
 func (c *Client) Download(ctx context.Context, videoID, dst string) (int64, error) {
-	urls, size, err := c.getPlayURLs(ctx, videoID)
+	plan, err := c.getPlayPlan(ctx, videoID)
 	if err != nil {
 		return 0, err
 	}
-	if len(urls) == 0 {
+	if len(plan.directURLs) == 0 && (len(plan.videoURLs) == 0 || len(plan.audioURLs) == 0) {
 		return 0, errors.New("获取下载地址失败")
 	}
 
-	tmp := dst + ".tmp"
-	var lastErr error
-	for _, u := range urls {
-		n, err := c.downloadFile(ctx, u, tmp)
+	if len(plan.videoURLs) > 0 && len(plan.audioURLs) > 0 {
+		size, err := c.downloadAndMergeDash(ctx, plan, dst)
 		if err == nil {
-			if err := os.Rename(tmp, dst); err != nil {
-				_ = os.Remove(tmp)
-				return 0, err
-			}
-			if n == 0 && size > 0 {
-				return size, nil
-			}
-			return n, nil
+			return size, nil
 		}
-		lastErr = err
+		return 0, err
+	}
+
+	tmp := dst + ".tmp"
+	n, err := c.downloadFirstAvailable(ctx, plan.directURLs, tmp)
+	if err != nil {
+		return 0, err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
 		_ = os.Remove(tmp)
+		return 0, err
 	}
-	if lastErr != nil {
-		return 0, lastErr
+	if n == 0 && plan.expectedSize > 0 {
+		return plan.expectedSize, nil
 	}
-	return 0, errors.New("下载失败")
+	return n, nil
 }
 
 func (c *Client) ReloadAuth() (bool, error) {
@@ -441,28 +444,35 @@ func (c *Client) doGetJSON(ctx context.Context, apiPath, query string, out any) 
 	return nil
 }
 
-func (c *Client) getPlayURLs(ctx context.Context, videoID string) ([]string, int64, error) {
+type playPlan struct {
+	directURLs   []string
+	videoURLs    []string
+	audioURLs    []string
+	expectedSize int64
+}
+
+func (c *Client) getPlayPlan(ctx context.Context, videoID string) (playPlan, error) {
 	values := url.Values{}
 	if bvid, ok := normalizeBVID(videoID); ok {
 		values.Set("bvid", bvid)
 	} else if aid, ok := normalizeAID(videoID); ok {
 		values.Set("aid", aid)
 	} else {
-		return nil, 0, ErrInvalidID
+		return playPlan{}, ErrInvalidID
 	}
 
 	var view viewResp
 	if err := c.doGetJSON(ctx, "/x/web-interface/view", values.Encode(), &view); err != nil {
-		return nil, 0, err
+		return playPlan{}, err
 	}
 	if view.Code != 0 {
 		if view.Code == -403 || view.Code == -412 {
 			c.markRiskReason(fmt.Sprintf("/x/web-interface/view 返回风控码 %d", view.Code))
 		}
-		return nil, 0, fmt.Errorf("获取视频信息失败: %s(%d)", view.Message, view.Code)
+		return playPlan{}, fmt.Errorf("获取视频信息失败: %s(%d)", view.Message, view.Code)
 	}
 	if view.Data.CID == 0 {
-		return nil, 0, errors.New("获取 cid 失败")
+		return playPlan{}, errors.New("获取 cid 失败")
 	}
 
 	playQuery := url.Values{}
@@ -471,31 +481,45 @@ func (c *Client) getPlayURLs(ctx context.Context, videoID string) ([]string, int
 	}
 	playQuery.Set("cid", strconv.FormatInt(view.Data.CID, 10))
 	playQuery.Set("qn", "80")
+	playQuery.Set("fnver", "0")
+	playQuery.Set("fnval", "4048")
+	playQuery.Set("fourk", "1")
 
 	var play playURLResp
 	if err := c.doGetJSON(ctx, "/x/player/playurl", playQuery.Encode(), &play); err != nil {
-		return nil, 0, err
+		return playPlan{}, err
 	}
 	if play.Code != 0 {
 		if play.Code == -403 || play.Code == -412 {
 			c.markRiskReason(fmt.Sprintf("/x/player/playurl 返回风控码 %d", play.Code))
 		}
-		return nil, 0, fmt.Errorf("获取播放地址失败: %s(%d)", play.Message, play.Code)
+		return playPlan{}, fmt.Errorf("获取播放地址失败: %s(%d)", play.Message, play.Code)
 	}
+
+	plan := playPlan{
+		videoURLs:    pickDashURLs(play.Data.Dash.Video),
+		audioURLs:    pickDashURLs(play.Data.Dash.Audio),
+		expectedSize: play.Data.Dash.bestVideoSize() + play.Data.Dash.bestAudioSize(),
+	}
+	if len(plan.videoURLs) > 0 && len(plan.audioURLs) > 0 {
+		return plan, nil
+	}
+
 	if len(play.Data.Durl) == 0 {
-		return nil, 0, errors.New("播放地址为空")
+		return playPlan{}, errors.New("播放地址为空")
 	}
 	first := play.Data.Durl[0]
-	urls := make([]string, 0, 1+len(first.BackupURL))
+	plan.expectedSize = first.Size
+	plan.directURLs = make([]string, 0, 1+len(first.BackupURL))
 	if first.URL != "" {
-		urls = append(urls, first.URL)
+		plan.directURLs = append(plan.directURLs, first.URL)
 	}
 	for _, backup := range first.BackupURL {
 		if backup != "" {
-			urls = append(urls, backup)
+			plan.directURLs = append(plan.directURLs, backup)
 		}
 	}
-	return urls, first.Size, nil
+	return plan, nil
 }
 
 func (c *Client) downloadFile(ctx context.Context, rawURL, dst string) (int64, error) {
@@ -536,6 +560,86 @@ func (c *Client) downloadFile(ctx context.Context, rawURL, dst string) (int64, e
 	}
 	c.resetRisk()
 	return n, nil
+}
+
+func (c *Client) downloadFirstAvailable(ctx context.Context, urls []string, dst string) (int64, error) {
+	if len(urls) == 0 {
+		return 0, errors.New("下载地址为空")
+	}
+	var lastErr error
+	for _, rawURL := range urls {
+		n, err := c.downloadFile(ctx, rawURL, dst)
+		if err == nil {
+			return n, nil
+		}
+		lastErr = err
+		_ = os.Remove(dst)
+	}
+	if lastErr != nil {
+		return 0, lastErr
+	}
+	return 0, errors.New("下载失败")
+}
+
+func (c *Client) downloadAndMergeDash(ctx context.Context, plan playPlan, dst string) (int64, error) {
+	tmpDir, err := os.MkdirTemp(filepath.Dir(dst), "dash-*")
+	if err != nil {
+		return 0, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	videoPath := filepath.Join(tmpDir, "video.m4s")
+	audioPath := filepath.Join(tmpDir, "audio.m4s")
+	outPath := filepath.Join(tmpDir, "merged.mp4")
+
+	if _, err := c.downloadFirstAvailable(ctx, plan.videoURLs, videoPath); err != nil {
+		return 0, err
+	}
+	if _, err := c.downloadFirstAvailable(ctx, plan.audioURLs, audioPath); err != nil {
+		return 0, err
+	}
+	if err := c.mergeAV(ctx, videoPath, audioPath, outPath); err != nil {
+		return 0, err
+	}
+	if err := os.Rename(outPath, dst); err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		return 0, err
+	}
+	if info.Size() == 0 && plan.expectedSize > 0 {
+		return plan.expectedSize, nil
+	}
+	return info.Size(), nil
+}
+
+func (c *Client) mergeAV(ctx context.Context, videoPath, audioPath, dst string) error {
+	cmd := exec.CommandContext(
+		ctx,
+		"ffmpeg",
+		"-y",
+		"-loglevel", "error",
+		"-i", videoPath,
+		"-i", audioPath,
+		"-c", "copy",
+		"-movflags", "+faststart",
+		dst,
+	)
+	cmd.Stdout = io.Discard
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return errors.New("未找到 ffmpeg，无法合并音视频")
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			return fmt.Errorf("合并音视频失败: %w", err)
+		}
+		return fmt.Errorf("合并音视频失败: %s", msg)
+	}
+	return nil
 }
 
 func (c *Client) signWbiParams(ctx context.Context, params map[string]string) (string, error) {
@@ -867,7 +971,82 @@ type playURLResp struct {
 			BackupURL []string `json:"backup_url"`
 			Size      int64    `json:"size"`
 		} `json:"durl"`
+		Dash playDash `json:"dash"`
 	} `json:"data"`
+}
+
+type playDash struct {
+	Video []playDashItem `json:"video"`
+	Audio []playDashItem `json:"audio"`
+}
+
+func (d playDash) bestVideoSize() int64 {
+	if len(d.Video) == 0 {
+		return 0
+	}
+	best := d.Video[0]
+	for _, item := range d.Video[1:] {
+		if item.Bandwidth > best.Bandwidth {
+			best = item
+		}
+	}
+	return best.Bandwidth
+}
+
+func (d playDash) bestAudioSize() int64 {
+	if len(d.Audio) == 0 {
+		return 0
+	}
+	best := d.Audio[0]
+	for _, item := range d.Audio[1:] {
+		if item.Bandwidth > best.Bandwidth {
+			best = item
+		}
+	}
+	return best.Bandwidth
+}
+
+type playDashItem struct {
+	BaseURL      string   `json:"baseUrl"`
+	BaseURLAlt   string   `json:"base_url"`
+	BackupURL    []string `json:"backupUrl"`
+	BackupURLAlt []string `json:"backup_url"`
+	Bandwidth    int64    `json:"bandwidth"`
+}
+
+func (i playDashItem) urls() []string {
+	base := strings.TrimSpace(i.BaseURL)
+	if base == "" {
+		base = strings.TrimSpace(i.BaseURLAlt)
+	}
+	urls := make([]string, 0, 1+len(i.BackupURL)+len(i.BackupURLAlt))
+	if base != "" {
+		urls = append(urls, base)
+	}
+	for _, item := range i.BackupURL {
+		if strings.TrimSpace(item) != "" {
+			urls = append(urls, item)
+		}
+	}
+	for _, item := range i.BackupURLAlt {
+		if strings.TrimSpace(item) != "" {
+			urls = append(urls, item)
+		}
+	}
+	return urls
+}
+
+func pickDashURLs(items []playDashItem) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	best := items[0]
+	for _, item := range items[1:] {
+		if item.Bandwidth > best.Bandwidth {
+			best = item
+		}
+	}
+	return best.urls()
 }
 
 type nameCacheEntry struct {
