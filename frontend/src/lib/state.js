@@ -45,7 +45,7 @@ export function createDefaultState() {
       { id: 3, type: "check", status: "queued", origin: "manual" }
     ],
     logs: [
-      makeLog("系统已加载默认驾驶舱数据"),
+      makeLog("系统已加载默认面板数据"),
       makeLog("已启用本地 / API 双模式切换"),
       makeLog("等待下一次后端同步")
     ],

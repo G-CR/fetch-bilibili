@@ -378,11 +378,11 @@ function App() {
       <main className="workspace">
         <header className="command-bar">
           <div>
-            <p className="eyebrow">总览驾驶舱</p>
-            <h2>绝版视频库驾驶舱</h2>
+            <p className="eyebrow">系统总览</p>
+            <h2>绝版视频库</h2>
             <p className="command-copy">
-              监控博主更新、下架检查、下载与归档沉淀；
-              {state.mode === "api" ? "当前运行在 API 真实联动模式。" : "当前运行在本地演示模式。"}
+              用于查看博主追踪、任务执行、视频状态与存储情况；
+              {state.mode === "api" ? "当前为 API 模式。" : "当前为本地模式。"}
             </p>
           </div>
           <div className="command-actions">
@@ -411,15 +411,15 @@ function App() {
           <div className="section-header">
             <div>
               <p className="section-kicker">系统概况</p>
-              <h3>第一屏直接展示实时工作态</h3>
+              <h3>系统概况</h3>
             </div>
             <span className="pill">最近同步: {state.system.lastSyncAt}</span>
           </div>
 
           <div className="metric-grid">
-            <MetricCard label="已维护博主" value={metrics.creators} detail="配置文件 + HTTP 接口" />
-            <MetricCard label="待处理任务" value={metrics.pendingJobs} detail="队列中 + 执行中" />
-            <MetricCard label="绝版视频" value={metrics.rareVideos} detail="已归档的稀缺资产" />
+            <MetricCard label="已维护博主" value={metrics.creators} detail="配置文件与 HTTP 接口" />
+            <MetricCard label="待处理任务" value={metrics.pendingJobs} detail="队列中与执行中" />
+            <MetricCard label="绝版视频" value={metrics.rareVideos} detail="已标记绝版的视频" />
             <MetricCard
               label="存储占用"
               value={storagePercent}
@@ -457,12 +457,12 @@ function App() {
               <div className="panel-header">
                 <div>
                   <p className="section-kicker">系统状态</p>
-                  <h4>连接、存储、调度快照</h4>
+                  <h4>系统状态</h4>
                 </div>
                 <span className="pill">风险 {state.system.riskLevel}</span>
               </div>
               <div className="signal-grid">
-                <SignalItem label="连接模式" value={state.mode === "api" ? "API 联动" : "本地演示"} />
+                <SignalItem label="连接模式" value={state.mode === "api" ? "API 模式" : "本地模式"} />
                 <SignalItem label="系统健康" value={healthLabel} />
                 <SignalItem label="热点目录" value={state.storage.hottestBucket || "-"} />
                 <SignalItem label="最近任务" value={formatDateTime(state.system.lastJobAt)} />
@@ -476,7 +476,7 @@ function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">博主管理</p>
-                <h3>维护入口与状态都集中在这里</h3>
+                <h3>博主管理与追踪状态</h3>
               </div>
               <span className="pill pill--soft">
                 {state.mode === "api" ? "列表来自后端" : "本地模式可编辑"}
@@ -563,7 +563,7 @@ function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">任务控制</p>
-                <h3>命令入口与队列明细</h3>
+                <h3>任务操作与队列明细</h3>
               </div>
               <span className="pill pill--soft">失败 {taskDiagnostics.failedCount}</span>
             </div>
@@ -666,7 +666,7 @@ function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">最新视频</p>
-                <h3>直接查看最近归档候选</h3>
+                <h3>最近视频</h3>
               </div>
             </div>
             <div className="stack-list">
@@ -692,7 +692,7 @@ function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">存储</p>
-                <h3>容量与清理优先级实时展示</h3>
+                <h3>存储容量与清理策略</h3>
               </div>
             </div>
             <div className="storage-meter">
@@ -712,11 +712,11 @@ function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">清理预览</p>
-                <h3>前端近似推演下一批清理候选</h3>
+                <h3>清理候选预览</h3>
               </div>
             </div>
             <p className="panel-note">
-              当前按「非绝版 → 播放量 → 收藏量」做界面预览。博主粉丝量暂未从现有 API 暴露，实际删除仍以后端真实排序为准。
+              前端当前按「非绝版 → 播放量 → 收藏量」预估清理顺序。博主粉丝量暂未从现有 API 暴露，实际删除仍以后端排序为准。
             </p>
             <div className="preview-list">
               {cleanupPreview.length > 0 ? (
@@ -752,7 +752,7 @@ function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">风控参数</p>
-                <h3>限速、Cookie、并发都来自真实配置</h3>
+                <h3>风控与连接配置</h3>
               </div>
             </div>
             <div className="signal-grid">
@@ -772,7 +772,7 @@ function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">运行建议</p>
-                <h3>当前状态下的执行提示</h3>
+                <h3>运行建议</h3>
               </div>
             </div>
             <ul className="text-list">
@@ -802,7 +802,7 @@ function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">连接设置</p>
-                <h3>本地与 API 模式切换</h3>
+                <h3>前端连接设置</h3>
               </div>
             </div>
             <div className="settings-group">
@@ -856,7 +856,7 @@ function App() {
             <div className="panel-header">
               <div>
                 <p className="section-kicker">最近事件</p>
-                <h3>保留最近一次操作与同步记录</h3>
+                <h3>最近操作记录</h3>
               </div>
             </div>
             <div className="log-list">

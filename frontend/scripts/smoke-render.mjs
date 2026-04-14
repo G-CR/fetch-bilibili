@@ -27,10 +27,16 @@ try {
   if (!html.includes("绝版视频库")) {
     throw new Error("前端首屏未渲染出预期文案");
   }
+  if (!html.includes("系统概况")) {
+    throw new Error("前端未渲染系统概况标题");
+  }
+  if (!html.includes("博主管理与追踪状态")) {
+    throw new Error("前端未渲染博主管理标题");
+  }
   if (!html.includes("任务详情")) {
     throw new Error("前端未渲染任务详情面板");
   }
-  if (!html.includes("清理预览")) {
+  if (!html.includes("清理候选预览")) {
     throw new Error("前端未渲染清理预览面板");
   }
   if (!html.includes("失败原因")) {
@@ -38,6 +44,15 @@ try {
   }
   if (!html.includes("停止追踪")) {
     throw new Error("前端未渲染停止追踪操作文案");
+  }
+  if (html.includes("第一屏直接展示实时工作态")) {
+    throw new Error("前端仍保留宣传式系统概况标题");
+  }
+  if (html.includes("维护入口与状态都集中在这里")) {
+    throw new Error("前端仍保留宣传式博主管理标题");
+  }
+  if (html.includes("总览驾驶舱")) {
+    throw new Error("前端仍保留驾驶舱文案");
   }
 
   console.log("smoke render ok");
