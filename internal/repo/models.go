@@ -57,6 +57,7 @@ type CleanupCandidate struct {
 	FileID               int64
 	FilePath             string
 	FileSizeBytes        int64
+	FileCreatedAt        time.Time
 }
 
 type Job struct {

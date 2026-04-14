@@ -90,7 +90,6 @@ const next = applyRemoteSnapshot(previous, {
   }
 }, "2026-04-13 20:00:00");
 
-assert.equal(next.mode, previous.mode);
 assert.equal(next.creators.length, 1);
 assert.equal(next.jobs[0].status, "running");
 assert.equal(next.jobs[0].createdAt, "2026-04-13T12:00:00Z");
@@ -161,5 +160,10 @@ assert.equal(diagnostics.runningCount, 1);
 assert.equal(diagnostics.queuedCount, 1);
 assert.equal(diagnostics.latestFailure?.id, 1);
 assert.equal(diagnostics.latestFailure?.errorMsg, "视频接口返回 412");
+
+const defaults = createDefaultState();
+assert.equal(defaults.creators.length, 0);
+assert.equal(defaults.videos.length, 0);
+assert.equal(defaults.jobs.length, 0);
 
 console.log("dashboard state ok");

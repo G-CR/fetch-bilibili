@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,8 +142,31 @@ func (s *stubDashboardService) GetStorageStats(context.Context) (dashboard.Stora
 	return s.storage, s.storageErr
 }
 
+type stubConfigService struct {
+	doc      ConfigDocument
+	loadErr  error
+	saved    string
+	saveResp ConfigSaveResult
+	saveErr  error
+}
+
+func (s *stubConfigService) Load(context.Context) (ConfigDocument, error) {
+	if s.loadErr != nil {
+		return ConfigDocument{}, s.loadErr
+	}
+	return s.doc, nil
+}
+
+func (s *stubConfigService) Save(_ context.Context, content string) (ConfigSaveResult, error) {
+	s.saved = content
+	if s.saveErr != nil {
+		return ConfigSaveResult{}, s.saveErr
+	}
+	return s.saveResp, nil
+}
+
 func newTestRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService) http.Handler {
-	return NewRouter(creatorSvc, jobSvc, dashboardSvc)
+	return NewRouter(creatorSvc, jobSvc, dashboardSvc, nil)
 }
 
 func TestHealthz(t *testing.T) {
@@ -915,7 +939,7 @@ func TestSystemStatus(t *testing.T) {
 			Cookie: dashboard.CookieStatus{
 				Configured:       true,
 				Status:           "valid",
-				Source:           "cookie_file",
+				Source:           "config",
 				LastCheckResult:  "valid",
 				LastReloadResult: "success",
 				LastError:        "上次刷新失败",
@@ -962,7 +986,7 @@ func TestSystemStatus(t *testing.T) {
 	if payload.Health != "online" || payload.Cookie.Status != "valid" {
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
-	if !payload.AuthEnabled || payload.Cookie.Source != "cookie_file" {
+	if !payload.AuthEnabled || payload.Cookie.Source != "config" {
 		t.Fatalf("unexpected auth payload: %+v", payload)
 	}
 	if payload.Risk.Level != "高" || payload.Risk.BackoffSeconds != 18 {
@@ -1074,6 +1098,73 @@ func TestCORSPreflight(t *testing.T) {
 	}
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got == "" {
 		t.Fatalf("expected CORS header")
+	}
+	if got := w.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodDelete) || !strings.Contains(got, http.MethodPut) {
+		t.Fatalf("expected DELETE and PUT in CORS allow methods, got %q", got)
+	}
+}
+
+func TestGetSystemConfig(t *testing.T) {
+	configSvc := &stubConfigService{
+		doc: ConfigDocument{
+			Path:    "/app/config.yaml",
+			Content: "storage:\n  root_dir: /data\nmysql:\n  dsn: test\n",
+		},
+	}
+	r := NewRouter(nil, nil, nil, configSvc)
+	req := httptest.NewRequest(http.MethodGet, "/system/config", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var payload struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Path != "/app/config.yaml" {
+		t.Fatalf("unexpected path: %s", payload.Path)
+	}
+	if !strings.Contains(payload.Content, "root_dir") {
+		t.Fatalf("unexpected content: %q", payload.Content)
+	}
+}
+
+func TestPutSystemConfig(t *testing.T) {
+	configSvc := &stubConfigService{
+		saveResp: ConfigSaveResult{
+			Changed:          true,
+			RestartScheduled: true,
+			Path:             "/app/config.yaml",
+		},
+	}
+	r := NewRouter(nil, nil, nil, configSvc)
+	req := httptest.NewRequest(http.MethodPut, "/system/config", bytes.NewReader([]byte(`{"content":"storage:\n  root_dir: /data\nmysql:\n  dsn: test\n"}`)))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(configSvc.saved, "root_dir") {
+		t.Fatalf("expected content saved")
+	}
+
+	var payload struct {
+		Changed          bool   `json:"changed"`
+		RestartScheduled bool   `json:"restart_scheduled"`
+		Path             string `json:"path"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !payload.Changed || !payload.RestartScheduled {
+		t.Fatalf("unexpected save response: %+v", payload)
 	}
 }
 

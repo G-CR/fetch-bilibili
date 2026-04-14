@@ -286,7 +286,8 @@ func (r *videoRepo) ListCleanupCandidates(ctx context.Context, filter repo.Clean
 			v.favorite_count,
 			vf.id AS file_id,
 			vf.path AS file_path,
-			vf.size_bytes AS file_size_bytes
+			vf.size_bytes AS file_size_bytes,
+			vf.created_at AS file_created_at
 		FROM videos v
 		INNER JOIN creators c ON c.id = v.creator_id
 		INNER JOIN video_files vf ON vf.video_id = v.id
@@ -325,6 +326,7 @@ func (r *videoRepo) ListCleanupCandidates(ctx context.Context, filter repo.Clean
 			&item.FileID,
 			&item.FilePath,
 			&item.FileSizeBytes,
+			&item.FileCreatedAt,
 		); err != nil {
 			return nil, err
 		}

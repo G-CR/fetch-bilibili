@@ -9,9 +9,9 @@
 - `CheckAvailable(videoID)`：调用 `x/web-interface/view` 判断视频可访问性。
 - `ResolveUID(name)`：调用 `x/web-interface/search/type` 解析名称并缓存。
 - 内置 WBI key 缓存（默认 12 小时）。
-- 如果配置 `cookie` / `sessdata` 或对应文件，会在请求头带上 Cookie。
-- 支持 `cookie_file` / `sessdata_file`，`cookie_file` 内容含 `=` 视为完整 Cookie，否则按 SESSDATA 处理；优先 `cookie_file`。
-- 内置 Cookie 有效性检查与配置自动刷新（由 `auth_check_interval` / `auth_reload_interval` 控制）。
+- 如果配置 `cookie` / `sessdata`，会在请求头带上 Cookie。
+- `cookie` 支持直接写完整 Cookie；`sessdata` 仅填写 token 时会自动拼成 `SESSDATA=...`。
+- 内置 Cookie 有效性检查（由 `auth_check_interval` 控制）。
 
 ## 3. 接口说明
 - 投稿列表：

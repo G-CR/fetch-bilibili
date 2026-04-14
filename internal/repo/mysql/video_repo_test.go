@@ -249,10 +249,10 @@ func TestVideoListCleanupCandidates(t *testing.T) {
 
 	rows := sqlmock.NewRows([]string{
 		"video_id", "source_video_id", "platform", "title", "state", "creator_id", "creator_name",
-		"follower_count", "view_count", "favorite_count", "file_id", "file_path", "file_size_bytes",
+		"follower_count", "view_count", "favorite_count", "file_id", "file_path", "file_size_bytes", "file_created_at",
 	}).AddRow(
 		int64(1), "BV1xx411c7mD", "bilibili", "稀有视频", "DOWNLOADED", int64(2), "测试博主",
-		int64(1000), int64(2000), int64(30), int64(9), "/data/bilibili/BV1xx411c7mD.mp4", int64(123),
+		int64(1000), int64(2000), int64(30), int64(9), "/data/bilibili/BV1xx411c7mD.mp4", int64(123), time.Date(2026, 4, 14, 10, 0, 0, 0, time.UTC),
 	)
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT v.id AS video_id")).
@@ -272,6 +272,9 @@ func TestVideoListCleanupCandidates(t *testing.T) {
 	if list[0].SourceVideoID != "BV1xx411c7mD" || list[0].FileID != 9 {
 		t.Fatalf("unexpected candidate: %+v", list[0])
 	}
+	if list[0].FileCreatedAt.IsZero() {
+		t.Fatalf("expected file created at scanned")
+	}
 }
 
 func TestVideoListCleanupCandidatesIncludeOutOfPrint(t *testing.T) {
@@ -287,7 +290,7 @@ func TestVideoListCleanupCandidatesIncludeOutOfPrint(t *testing.T) {
 		WithArgs(5).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"video_id", "source_video_id", "platform", "title", "state", "creator_id", "creator_name",
-			"follower_count", "view_count", "favorite_count", "file_id", "file_path", "file_size_bytes",
+			"follower_count", "view_count", "favorite_count", "file_id", "file_path", "file_size_bytes", "file_created_at",
 		}))
 
 	if _, err := repoImpl.Videos().ListCleanupCandidates(context.Background(), repo.CleanupCandidateFilter{

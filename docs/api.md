@@ -301,7 +301,7 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
     "mid": 10001,
     "uname": "tester",
     "status": "valid",
-    "source": "cookie_file",
+    "source": "config",
     "last_check_at": "2026-04-13T12:00:00Z",
     "last_check_result": "valid",
     "last_reload_at": "2026-04-13T11:50:00Z",

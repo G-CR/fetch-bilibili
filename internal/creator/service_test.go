@@ -129,9 +129,10 @@ func (s *stubRepo) DeleteByID(ctx context.Context, id int64) (int64, error) {
 }
 
 type stubResolver struct {
-	uid  string
-	name string
-	err  error
+	uid       string
+	name      string
+	err       error
+	nameByUID map[string]string
 }
 
 func (s *stubResolver) ResolveUID(ctx context.Context, keyword string) (string, string, error) {
@@ -139,6 +140,16 @@ func (s *stubResolver) ResolveUID(ctx context.Context, keyword string) (string, 
 		return "", "", s.err
 	}
 	return s.uid, s.name, nil
+}
+
+func (s *stubResolver) ResolveName(ctx context.Context, uid string) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	if s.nameByUID == nil {
+		return "", nil
+	}
+	return s.nameByUID[uid], nil
 }
 
 func TestServiceUpsertByUID(t *testing.T) {
@@ -185,6 +196,27 @@ func TestServiceUpsertByNameUsesResolvedName(t *testing.T) {
 	}
 	if creator.Name != "resolved-name" {
 		t.Fatalf("expected resolved name")
+	}
+}
+
+func TestServiceUpsertByUIDBackfillsMissingName(t *testing.T) {
+	repoStub := &stubRepo{}
+	resolver := &stubResolver{
+		nameByUID: map[string]string{
+			"123": "resolved-name",
+		},
+	}
+	svc := NewService(repoStub, resolver, nil)
+
+	creator, err := svc.Upsert(context.Background(), Entry{UID: "123"})
+	if err != nil {
+		t.Fatalf("upsert error: %v", err)
+	}
+	if creator.Name != "resolved-name" {
+		t.Fatalf("expected resolved name, got %+v", creator)
+	}
+	if repoStub.last.Name != "resolved-name" {
+		t.Fatalf("expected repo to persist resolved name, got %+v", repoStub.last)
 	}
 }
 
@@ -245,6 +277,39 @@ func TestServiceListActive(t *testing.T) {
 	}
 	if len(creators) != 2 {
 		t.Fatalf("expected 2 creators")
+	}
+}
+
+func TestServiceListActiveBackfillsMissingNames(t *testing.T) {
+	repoStub := &stubRepo{
+		list: []repo.Creator{
+			{ID: 1, UID: "123", Platform: "bilibili", Status: "active"},
+			{ID: 2, UID: "456", Name: "kept", Platform: "bilibili", Status: "active"},
+		},
+		creators: map[int64]repo.Creator{
+			1: {ID: 1, UID: "123", Platform: "bilibili", Status: "active"},
+			2: {ID: 2, UID: "456", Name: "kept", Platform: "bilibili", Status: "active"},
+		},
+	}
+	resolver := &stubResolver{
+		nameByUID: map[string]string{
+			"123": "resolved-name",
+		},
+	}
+	svc := NewService(repoStub, resolver, nil)
+
+	creators, err := svc.ListActive(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("list active error: %v", err)
+	}
+	if creators[0].Name != "resolved-name" {
+		t.Fatalf("expected first creator name backfilled, got %+v", creators[0])
+	}
+	if repoStub.updated.ID != 1 || repoStub.updated.Name != "resolved-name" {
+		t.Fatalf("expected repo update for missing name, got %+v", repoStub.updated)
+	}
+	if creators[1].Name != "kept" {
+		t.Fatalf("expected existing name kept, got %+v", creators[1])
 	}
 }
 

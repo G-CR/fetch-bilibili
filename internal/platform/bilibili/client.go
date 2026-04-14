@@ -25,7 +25,7 @@ var ErrInvalidID = errors.New("无效的 ID")
 const (
 	defaultBaseURL  = "https://api.bilibili.com"
 	defaultReferer  = "https://www.bilibili.com"
-	defaultPageSize = 30
+	defaultPageSize = 5
 )
 
 // Client is a Bilibili API client.
@@ -37,10 +37,8 @@ type Client struct {
 	logger     *log.Logger
 	now        func() time.Time
 
-	cookieMu     sync.RWMutex
-	cookie       string
-	cookieFile   string
-	sessdataFile string
+	cookieMu sync.RWMutex
+	cookie   string
 
 	mu  sync.Mutex
 	wbi wbiKeys
@@ -48,6 +46,7 @@ type Client struct {
 	nameCacheMu  sync.RWMutex
 	nameCache    map[string]nameCacheEntry
 	nameCacheTTL time.Duration
+	pageSize     int
 
 	riskMu      sync.Mutex
 	riskUntil   time.Time
@@ -128,9 +127,13 @@ func New(cfg config.BilibiliConfig, logger *log.Logger, opts ...Option) *Client 
 	if userAgent == "" {
 		userAgent = "fetch-bilibili/1.0"
 	}
+	pageSize := cfg.FetchPageSize
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
 
 	cookie := buildCookie(cfg.Cookie, cfg.SESSDATA)
-	cookieConfigured := cookie != "" || strings.TrimSpace(cfg.CookieFile) != "" || strings.TrimSpace(cfg.SESSDATAFile) != ""
+	cookieConfigured := cookie != ""
 
 	c := &Client{
 		httpClient:   &http.Client{Timeout: timeout},
@@ -138,12 +141,11 @@ func New(cfg config.BilibiliConfig, logger *log.Logger, opts ...Option) *Client 
 		referer:      defaultReferer,
 		baseURL:      defaultBaseURL,
 		cookie:       cookie,
-		cookieFile:   strings.TrimSpace(cfg.CookieFile),
-		sessdataFile: strings.TrimSpace(cfg.SESSDATAFile),
 		logger:       logger,
 		now:          time.Now,
 		nameCache:    make(map[string]nameCacheEntry),
 		nameCacheTTL: cacheTTL,
+		pageSize:     pageSize,
 		riskBase:     riskBase,
 		riskMax:      riskMax,
 		riskJitter:   riskJitter,
@@ -167,7 +169,7 @@ func (c *Client) ListVideos(ctx context.Context, uid string) ([]VideoMeta, error
 	params := map[string]string{
 		"mid":   uid,
 		"pn":    "1",
-		"ps":    strconv.Itoa(defaultPageSize),
+		"ps":    strconv.Itoa(c.pageSize),
 		"order": "pubdate",
 	}
 
@@ -318,7 +320,42 @@ func (c *Client) ResolveUID(ctx context.Context, keyword string) (string, string
 	}
 
 	c.setCachedName(key, uid, name)
+	c.setCachedName(uidCacheKey(uid), uid, name)
 	return uid, name, nil
+}
+
+func (c *Client) ResolveName(ctx context.Context, uid string) (string, error) {
+	key := strings.TrimSpace(uid)
+	if key == "" {
+		return "", errors.New("uid 不能为空")
+	}
+
+	if _, name, ok := c.getCachedName(uidCacheKey(key)); ok && strings.TrimSpace(name) != "" {
+		return name, nil
+	}
+
+	query, err := c.signWbiParams(ctx, map[string]string{"mid": key})
+	if err != nil {
+		return "", err
+	}
+
+	var resp userProfileResp
+	if err := c.doGetJSON(ctx, "/x/space/wbi/acc/info", query, &resp); err != nil {
+		return "", err
+	}
+	if resp.Code != 0 {
+		if resp.Code == -403 || resp.Code == -412 {
+			c.markRiskReason(fmt.Sprintf("/x/space/wbi/acc/info 返回风控码 %d", resp.Code))
+		}
+		return "", fmt.Errorf("查询博主信息失败: %s(%d)", resp.Message, resp.Code)
+	}
+
+	name := strings.TrimSpace(resp.Data.Name)
+	if name == "" {
+		return "", errors.New("查询博主信息失败: 名称为空")
+	}
+	c.setCachedName(uidCacheKey(key), key, name)
+	return name, nil
 }
 
 func (c *Client) Download(ctx context.Context, videoID, dst string) (int64, error) {
@@ -354,19 +391,8 @@ func (c *Client) Download(ctx context.Context, videoID, dst string) (int64, erro
 }
 
 func (c *Client) ReloadAuth() (bool, error) {
-	reloadedAt := c.now()
-	cookie, source, err := c.loadCookieFromFiles()
-	if err != nil {
-		c.recordReload(reloadedAt, "error", err.Error(), "")
-		return false, err
-	}
-	if cookie == "" {
-		c.recordReload(reloadedAt, "no_change", "", "")
-		return false, nil
-	}
-	c.setCookie(cookie)
-	c.recordReload(reloadedAt, "success", "", source)
-	return true, nil
+	c.recordReload(c.now(), "no_change", "", "")
+	return false, nil
 }
 
 func (c *Client) RuntimeStatus() RuntimeStatus {
@@ -566,41 +592,6 @@ func (c *Client) getWbiKeys(ctx context.Context) (wbiKeys, error) {
 	return keys, nil
 }
 
-func (c *Client) loadCookieFromFiles() (string, string, error) {
-	if c.cookieFile != "" {
-		cookie, err := readCookieFile(c.cookieFile)
-		if err != nil {
-			return "", "", err
-		}
-		if cookie != "" {
-			return cookie, "cookie_file", nil
-		}
-	}
-	if c.sessdataFile != "" {
-		content, err := os.ReadFile(c.sessdataFile)
-		if err != nil {
-			return "", "", err
-		}
-		return buildCookie("", string(content)), "sessdata_file", nil
-	}
-	return "", "", nil
-}
-
-func readCookieFile(path string) (string, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	value := strings.TrimSpace(string(content))
-	if value == "" {
-		return "", nil
-	}
-	if strings.Contains(value, "=") {
-		return value, nil
-	}
-	return buildCookie("", value), nil
-}
-
 func buildCookie(cookie, sessdata string) string {
 	cookie = strings.TrimSpace(cookie)
 	if cookie != "" {
@@ -732,6 +723,10 @@ func trimFileKey(raw string) string {
 	return raw
 }
 
+func uidCacheKey(uid string) string {
+	return "uid:" + strings.TrimSpace(uid)
+}
+
 func parseDuration(raw string) int {
 	if raw == "" {
 		return 0
@@ -791,12 +786,6 @@ func pickFavorite(fav, favorites int64) int64 {
 func detectCookieSource(cfg config.BilibiliConfig) string {
 	if strings.TrimSpace(cfg.Cookie) != "" || strings.TrimSpace(cfg.SESSDATA) != "" {
 		return "config"
-	}
-	if strings.TrimSpace(cfg.CookieFile) != "" {
-		return "cookie_file"
-	}
-	if strings.TrimSpace(cfg.SESSDATAFile) != "" {
-		return "sessdata_file"
 	}
 	return ""
 }
@@ -895,5 +884,13 @@ type userSearchResp struct {
 			Mid   int64  `json:"mid"`
 			Uname string `json:"uname"`
 		} `json:"result"`
+	} `json:"data"`
+}
+
+type userProfileResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		Name string `json:"name"`
 	} `json:"data"`
 }

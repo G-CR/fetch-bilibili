@@ -3,6 +3,18 @@ import http from "node:http";
 const port = Number(process.env.E2E_API_PORT || 43180);
 
 const initialState = () => ({
+  configText: `server:
+  http_addr: ":8080"
+  shutdown_timeout: 10s
+storage:
+  root: /data/archive
+  limit_gb: 20
+scheduler:
+  fetch_interval: 45m
+  check_interval: 24h
+  cleanup_interval: 24h
+  stable_days: 30
+`,
   creators: [
     { id: 101, uid: "123456", name: "Mock 收藏向频道", platform: "bilibili", status: "active" },
     { id: 102, uid: "654321", name: "Mock 科技区 UP", platform: "bilibili", status: "paused" }
@@ -128,7 +140,7 @@ function sendJSON(res, status, payload) {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type"
   });
   res.end(JSON.stringify(payload));
@@ -202,6 +214,31 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "PATCH" && req.url.startsWith("/creators/")) {
+      const id = Number(req.url.split("/")[2]);
+      const payload = await readBody(req);
+      let found = false;
+      state.creators = state.creators.map((creator) => {
+        if (creator.id !== id) {
+          return creator;
+        }
+        found = true;
+        return {
+          ...creator,
+          name: payload.name === undefined ? creator.name : String(payload.name || ""),
+          status: payload.status === undefined ? creator.status : String(payload.status || creator.status)
+        };
+      });
+      if (!found) {
+        sendJSON(res, 404, { error: "not found" });
+        return;
+      }
+      state.system.overview.active_creators = state.creators.filter((item) => item.status === "active").length;
+      const creator = state.creators.find((item) => item.id === id);
+      sendJSON(res, 200, creator);
+      return;
+    }
+
     if (req.method === "GET" && req.url.startsWith("/jobs")) {
       sendJSON(res, 200, { items: state.jobs });
       return;
@@ -233,6 +270,36 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && req.url === "/system/status") {
       sendJSON(res, 200, state.system);
+      return;
+    }
+
+    if (req.method === "GET" && req.url === "/system/config") {
+      sendJSON(res, 200, {
+        path: "/app/config.yaml",
+        content: state.configText
+      });
+      return;
+    }
+
+    if (req.method === "PUT" && req.url === "/system/config") {
+      const payload = await readBody(req);
+      const nextContent = String(payload.content || "");
+      const tabLineIndex = nextContent.split("\n").findIndex((line) => line.includes("\t"));
+      if (tabLineIndex >= 0) {
+        sendJSON(res, 400, {
+          error: `配置校验失败: 第 ${tabLineIndex + 1} 行包含 Tab 缩进，请改为空格缩进`
+        });
+        return;
+      }
+      const changed = nextContent !== state.configText;
+      if (changed) {
+        state.configText = nextContent;
+      }
+      sendJSON(res, 200, {
+        changed,
+        restart_scheduled: changed,
+        path: "/app/config.yaml"
+      });
       return;
     }
 

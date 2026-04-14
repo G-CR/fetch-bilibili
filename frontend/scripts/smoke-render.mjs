@@ -39,11 +39,23 @@ try {
   if (!html.includes("清理候选预览")) {
     throw new Error("前端未渲染清理预览面板");
   }
-  if (!html.includes("失败原因")) {
-    throw new Error("前端未渲染失败原因区域");
+  if (!html.includes("选择任务查看详情")) {
+    throw new Error("前端未渲染任务详情空态文案");
   }
-  if (!html.includes("停止追踪")) {
-    throw new Error("前端未渲染停止追踪操作文案");
+  if (!html.includes("添加博主")) {
+    throw new Error("前端未渲染博主管理表单");
+  }
+  if (!html.includes("前端连接设置")) {
+    throw new Error("前端未渲染连接设置面板");
+  }
+  if (!html.includes("配置文件编辑")) {
+    throw new Error("前端未渲染配置编辑面板");
+  }
+  if (!html.includes("保存前差异预览")) {
+    throw new Error("前端未渲染配置差异预览面板");
+  }
+  if (!html.includes("校验结果详情")) {
+    throw new Error("前端未渲染配置校验详情面板");
   }
   if (html.includes("第一屏直接展示实时工作态")) {
     throw new Error("前端仍保留宣传式系统概况标题");
@@ -53,6 +65,12 @@ try {
   }
   if (html.includes("总览驾驶舱")) {
     throw new Error("前端仍保留驾驶舱文案");
+  }
+  if (html.includes("本地模式")) {
+    throw new Error("前端仍保留本地模式文案");
+  }
+  if (html.includes('name="mode"')) {
+    throw new Error("前端仍保留模式切换控件");
   }
 
   console.log("smoke render ok");

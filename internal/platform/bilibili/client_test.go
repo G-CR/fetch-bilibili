@@ -132,6 +132,50 @@ func TestListVideosAndCheckAvailable(t *testing.T) {
 	}
 }
 
+func TestListVideosUsesConfiguredFetchPageSize(t *testing.T) {
+	imgKey := "7cd084941338484aae1ad9425b84077c"
+	subKey := "4932caff0ff746eab6f01bf08b70ac45"
+
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/x/web-interface/nav":
+			_ = json.NewEncoder(w).Encode(navResp{
+				Code: 0,
+				Data: struct {
+					IsLogin bool   `json:"isLogin"`
+					Mid     int64  `json:"mid"`
+					Uname   string `json:"uname"`
+					WbiImg  struct {
+						ImgURL string `json:"img_url"`
+						SubURL string `json:"sub_url"`
+					} `json:"wbi_img"`
+				}{
+					WbiImg: struct {
+						ImgURL string `json:"img_url"`
+						SubURL string `json:"sub_url"`
+					}{
+						ImgURL: "https://i0.hdslb.com/bfs/wbi/" + imgKey + ".png",
+						SubURL: "https://i0.hdslb.com/bfs/wbi/" + subKey + ".png",
+					},
+				},
+			})
+		case "/x/space/wbi/arc/search":
+			if got := r.URL.Query().Get("ps"); got != "7" {
+				t.Fatalf("expected ps=7, got %s", got)
+			}
+			_ = json.NewEncoder(w).Encode(arcSearchResp{Code: 0})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := New(config.BilibiliConfig{FetchPageSize: 7}, nil, WithBaseURL(server.URL))
+	if _, err := client.ListVideos(context.Background(), "123"); err != nil {
+		t.Fatalf("ListVideos error: %v", err)
+	}
+}
+
 func TestCheckAvailableUnavailable(t *testing.T) {
 	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(viewResp{Code: -404, Message: "not found"})
@@ -370,27 +414,24 @@ func TestSESSDATAHeader(t *testing.T) {
 	}
 }
 
-func TestReloadAuthFromFiles(t *testing.T) {
+func TestReloadAuthWithInlineCookieReturnsNoChange(t *testing.T) {
 	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Cookie") != "SESSDATA=filetoken" {
-			t.Fatalf("expected cookie from file")
+		if r.Header.Get("Cookie") != "SESSDATA=inline-token" {
+			t.Fatalf("expected inline cookie header")
 		}
 		_ = json.NewEncoder(w).Encode(viewResp{Code: 0})
 	}))
 	defer server.Close()
 
-	dir := t.TempDir()
-	cookieFile := filepath.Join(dir, "cookie.txt")
-	if err := os.WriteFile(cookieFile, []byte("SESSDATA=filetoken"), 0o644); err != nil {
-		t.Fatalf("write cookie file: %v", err)
-	}
-
-	cfg := config.BilibiliConfig{CookieFile: cookieFile}
+	cfg := config.BilibiliConfig{Cookie: "SESSDATA=inline-token"}
 	client := New(cfg, nil, WithBaseURL(server.URL))
 
 	updated, err := client.ReloadAuth()
-	if err != nil || !updated {
-		t.Fatalf("expected reload success")
+	if err != nil {
+		t.Fatalf("expected reload no-op without error: %v", err)
+	}
+	if updated {
+		t.Fatalf("expected no config reload for inline cookie")
 	}
 
 	if _, err := client.CheckAvailable(context.Background(), "BV1xx"); err != nil {
@@ -478,6 +519,78 @@ func TestResolveUIDNumeric(t *testing.T) {
 	}
 	if atomic.LoadInt32(&calls) != 0 {
 		t.Fatalf("expected no search call")
+	}
+}
+
+func TestResolveNameByUID(t *testing.T) {
+	imgKey := "7cd084941338484aae1ad9425b84077c"
+	subKey := "4932caff0ff746eab6f01bf08b70ac45"
+	mixinKey := calcMixinKey(imgKey, subKey)
+
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/x/web-interface/nav":
+			_ = json.NewEncoder(w).Encode(navResp{
+				Code: 0,
+				Data: struct {
+					IsLogin bool   `json:"isLogin"`
+					Mid     int64  `json:"mid"`
+					Uname   string `json:"uname"`
+					WbiImg  struct {
+						ImgURL string `json:"img_url"`
+						SubURL string `json:"sub_url"`
+					} `json:"wbi_img"`
+				}{
+					WbiImg: struct {
+						ImgURL string `json:"img_url"`
+						SubURL string `json:"sub_url"`
+					}{
+						ImgURL: "https://i0.hdslb.com/bfs/wbi/" + imgKey + ".png",
+						SubURL: "https://i0.hdslb.com/bfs/wbi/" + subKey + ".png",
+					},
+				},
+			})
+		case "/x/space/wbi/acc/info":
+			q := r.URL.Query()
+			params := map[string]string{
+				"mid": q.Get("mid"),
+			}
+			wts, _ := strconv.ParseInt(q.Get("wts"), 10, 64)
+			want := signParams(params, mixinKey, wts)
+			if want != r.URL.RawQuery {
+				t.Fatalf("signed query mismatch")
+			}
+			resp := struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+				Data    struct {
+					Name string `json:"name"`
+				} `json:"data"`
+			}{Code: 0}
+			resp.Data.Name = "Alice"
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := New(config.BilibiliConfig{}, nil, WithBaseURL(server.URL))
+
+	type nameResolver interface {
+		ResolveName(context.Context, string) (string, error)
+	}
+	resolver, ok := any(client).(nameResolver)
+	if !ok {
+		t.Fatalf("client should implement ResolveName")
+	}
+
+	name, err := resolver.ResolveName(context.Background(), "123")
+	if err != nil {
+		t.Fatalf("resolve name error: %v", err)
+	}
+	if name != "Alice" {
+		t.Fatalf("unexpected name: %s", name)
 	}
 }
 
@@ -833,18 +946,12 @@ func TestDownloadForbidden(t *testing.T) {
 }
 
 func TestRuntimeStatusTracksCookieSourceAndReload(t *testing.T) {
-	dir := t.TempDir()
-	cookieFile := filepath.Join(dir, "cookie.txt")
-	if err := os.WriteFile(cookieFile, []byte("SESSDATA=filetoken"), 0o644); err != nil {
-		t.Fatalf("write cookie file: %v", err)
-	}
-
-	client := New(config.BilibiliConfig{CookieFile: cookieFile}, nil)
+	client := New(config.BilibiliConfig{Cookie: "SESSDATA=inline-token"}, nil)
 	status := client.RuntimeStatus()
 	if !status.CookieConfigured {
 		t.Fatalf("expected cookie configured")
 	}
-	if status.CookieSource != "cookie_file" {
+	if status.CookieSource != "config" {
 		t.Fatalf("unexpected cookie source: %s", status.CookieSource)
 	}
 
@@ -852,12 +959,12 @@ func TestRuntimeStatusTracksCookieSourceAndReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReloadAuth error: %v", err)
 	}
-	if !updated {
-		t.Fatalf("expected updated")
+	if updated {
+		t.Fatalf("expected no inline reload")
 	}
 
 	status = client.RuntimeStatus()
-	if status.LastReloadResult != "success" {
+	if status.LastReloadResult != "no_change" {
 		t.Fatalf("unexpected reload result: %s", status.LastReloadResult)
 	}
 	if status.LastReloadAt.IsZero() {

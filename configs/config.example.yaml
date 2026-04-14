@@ -8,6 +8,7 @@ storage:
   max_bytes: 2199023255552      # 2TB
   safe_bytes: 1979120929996     # 90% of 2TB
   keep_out_of_print: true
+  cleanup_retention_hours: 168
   delete_weights:
     out_of_print_penalty: -100
     stable_bonus: 30
@@ -41,12 +42,10 @@ bilibili:
   resolve_name_cache_ttl: "24h"
   request_timeout: "10m"
   user_agent: "fetch-bilibili/1.0"
+  fetch_page_size: 5
   # 二选一：cookie 优先，sessdata 次之（自动拼成 Cookie 头）
   cookie: ""
   sessdata: ""
-  # 也可从文件读取，内容包含 "=" 视为完整 Cookie，否则当作 SESSDATA
-  cookie_file: ""
-  sessdata_file: ""
   # 认证检查与自动刷新周期（可按需调整）
   auth_check_interval: "12h"
   auth_reload_interval: "30m"

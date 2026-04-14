@@ -19,6 +19,7 @@ storage:
   max_bytes: 2199023255552      # 2TB
   safe_bytes: 1979120929996     # 90% of 2TB
   keep_out_of_print: true
+  cleanup_retention_hours: 168
   delete_weights:
     out_of_print_penalty: -100
     stable_bonus: 30
@@ -50,10 +51,9 @@ bilibili:
   resolve_name_cache_ttl: "24h"
   request_timeout: "10m"
   user_agent: "fetch-bilibili/1.0"
+  fetch_page_size: 5
   cookie: ""         # 可直接粘贴 Cookie
   sessdata: ""       # 或只配置 SESSDATA
-  cookie_file: ""    # 读取完整 Cookie 或 SESSDATA 文件
-  sessdata_file: ""  # 仅 SESSDATA 文件
   auth_check_interval: "12h"
   auth_reload_interval: "30m"
   risk_backoff_base: "2s"
@@ -83,6 +83,7 @@ logging:
 - `max_bytes`：最大容量。
 - `safe_bytes`：清理后安全容量，建议为 `max_bytes * 0.9`。
 - `keep_out_of_print`：是否强制保留绝版。
+- `cleanup_retention_hours`：视频下载成功后，至少保留多少小时才允许被 cleanup 删除，默认 168 小时。
 - `delete_weights`：清理评分权重（可配置）。
 
 ### 3.3 scheduler
@@ -119,13 +120,11 @@ creators:
 - `resolve_name_cache_ttl`：名称解析为 UID 的缓存时间。
 - `request_timeout`：请求超时。
 - `user_agent`：请求 UA。
+- `fetch_page_size`：每次拉取单个博主投稿列表时请求的最新视频数量，默认 5。
 - `cookie`：完整 Cookie 字符串（优先使用）。
 - `sessdata`：仅提供 SESSDATA 时自动拼成 Cookie。
-- `cookie_file`：Cookie 文件路径；内容含 `=` 视为完整 Cookie，否则视为 SESSDATA。
-- `sessdata_file`：SESSDATA 文件路径（仅包含 token）。
 - `auth_check_interval`：Cookie 登录状态检查周期（默认 12h）。
-- `auth_reload_interval`：从文件刷新 Cookie 的周期（默认 30m）。
-- `cookie_file` 与 `sessdata_file` 同时配置时优先使用 `cookie_file`，刷新成功后覆盖当前 Cookie。
+- `auth_reload_interval`：认证观察任务的刷新周期字段（默认 30m）；当前不再支持从文件自动刷新 Cookie。
 - `risk_backoff_base`：触发风控时的基础退避时长。
 - `risk_backoff_max`：退避最大时长（指数增长上限）。
 - `risk_backoff_jitter`：退避抖动比例（0~1）。

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -26,11 +27,12 @@ type ServerConfig struct {
 }
 
 type StorageConfig struct {
-	RootDir        string             `yaml:"root_dir"`
-	MaxBytes       int64              `yaml:"max_bytes"`
-	SafeBytes      int64              `yaml:"safe_bytes"`
-	KeepOutOfPrint bool               `yaml:"keep_out_of_print"`
-	DeleteWeights  DeleteWeightConfig `yaml:"delete_weights"`
+	RootDir               string             `yaml:"root_dir"`
+	MaxBytes              int64              `yaml:"max_bytes"`
+	SafeBytes             int64              `yaml:"safe_bytes"`
+	KeepOutOfPrint        bool               `yaml:"keep_out_of_print"`
+	CleanupRetentionHours int                `yaml:"cleanup_retention_hours"`
+	DeleteWeights         DeleteWeightConfig `yaml:"delete_weights"`
 }
 
 type DeleteWeightConfig struct {
@@ -68,10 +70,9 @@ type BilibiliConfig struct {
 	ResolveNameCacheTTL time.Duration `yaml:"resolve_name_cache_ttl"`
 	RequestTimeout      time.Duration `yaml:"request_timeout"`
 	UserAgent           string        `yaml:"user_agent"`
+	FetchPageSize       int           `yaml:"fetch_page_size"`
 	Cookie              string        `yaml:"cookie"`
 	SESSDATA            string        `yaml:"sessdata"`
-	CookieFile          string        `yaml:"cookie_file"`
-	SESSDATAFile        string        `yaml:"sessdata_file"`
 	AuthCheckInterval   time.Duration `yaml:"auth_check_interval"`
 	AuthReloadInterval  time.Duration `yaml:"auth_reload_interval"`
 	RiskBackoffBase     time.Duration `yaml:"risk_backoff_base"`
@@ -101,9 +102,10 @@ func Default() Config {
 			WriteTimeout: 30 * time.Second,
 		},
 		Storage: StorageConfig{
-			MaxBytes:       2 * 1024 * 1024 * 1024 * 1024,
-			SafeBytes:      int64(2*1024*1024*1024*1024) * 9 / 10,
-			KeepOutOfPrint: true,
+			MaxBytes:              2 * 1024 * 1024 * 1024 * 1024,
+			SafeBytes:             int64(2*1024*1024*1024*1024) * 9 / 10,
+			KeepOutOfPrint:        true,
+			CleanupRetentionHours: 168,
 			DeleteWeights: DeleteWeightConfig{
 				OutOfPrintPenalty:  -100,
 				StableBonus:        30,
@@ -135,6 +137,7 @@ func Default() Config {
 			ResolveNameCacheTTL: 24 * time.Hour,
 			RequestTimeout:      10 * time.Second,
 			UserAgent:           "fetch-bilibili/1.0",
+			FetchPageSize:       5,
 			AuthCheckInterval:   12 * time.Hour,
 			AuthReloadInterval:  30 * time.Minute,
 			RiskBackoffBase:     2 * time.Second,
@@ -156,12 +159,19 @@ func Default() Config {
 }
 
 func Load(path string) (Config, error) {
-	cfg := Default()
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err
 	}
+	return Parse(data)
+}
+
+func Parse(data []byte) (Config, error) {
+	if err := rejectDeprecatedBilibiliAuthFields(data); err != nil {
+		return Config{}, err
+	}
+
+	cfg := Default()
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, err
 	}
@@ -172,6 +182,40 @@ func Load(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func rejectDeprecatedBilibiliAuthFields(data []byte) error {
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+
+	rawBilibili, ok := root["bilibili"]
+	if !ok {
+		return nil
+	}
+
+	bilibiliMap, ok := rawBilibili.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	if value, exists := bilibiliMap["cookie_file"]; exists && strings.TrimSpace(toString(value)) != "" {
+		return errors.New("bilibili.cookie_file 已废弃，请改用 bilibili.cookie")
+	}
+	if value, exists := bilibiliMap["sessdata_file"]; exists && strings.TrimSpace(toString(value)) != "" {
+		return errors.New("bilibili.sessdata_file 已废弃，请改用 bilibili.sessdata")
+	}
+	return nil
+}
+
+func toString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return ""
+	}
 }
 
 func applyDefaults(cfg *Config) {
@@ -190,6 +234,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Storage.SafeBytes == 0 {
 		cfg.Storage.SafeBytes = cfg.Storage.MaxBytes * 9 / 10
+	}
+	if cfg.Storage.CleanupRetentionHours == 0 {
+		cfg.Storage.CleanupRetentionHours = 168
 	}
 	if cfg.Scheduler.FetchInterval == 0 {
 		cfg.Scheduler.FetchInterval = 45 * time.Minute
@@ -227,6 +274,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Bilibili.UserAgent == "" {
 		cfg.Bilibili.UserAgent = "fetch-bilibili/1.0"
 	}
+	if cfg.Bilibili.FetchPageSize == 0 {
+		cfg.Bilibili.FetchPageSize = 5
+	}
 	if cfg.Bilibili.AuthCheckInterval == 0 {
 		cfg.Bilibili.AuthCheckInterval = 12 * time.Hour
 	}
@@ -263,8 +313,14 @@ func validate(cfg Config) error {
 	if cfg.Storage.RootDir == "" {
 		return errors.New("storage.root_dir 必须配置")
 	}
+	if cfg.Storage.CleanupRetentionHours < 0 {
+		return errors.New("storage.cleanup_retention_hours 不能小于 0")
+	}
 	if cfg.MySQL.DSN == "" {
 		return errors.New("mysql.dsn 必须配置")
+	}
+	if cfg.Bilibili.FetchPageSize < 0 {
+		return errors.New("bilibili.fetch_page_size 必须大于 0")
 	}
 	return nil
 }

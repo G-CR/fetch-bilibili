@@ -46,6 +46,13 @@ export async function deleteCreator(baseURL, id) {
   });
 }
 
+export async function patchCreator(baseURL, id, patch) {
+  return request(baseURL, `/creators/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch)
+  });
+}
+
 export async function enqueueJob(baseURL, type) {
   return request(baseURL, "/jobs", {
     method: "POST",
@@ -76,6 +83,19 @@ export async function getSystemStatus(baseURL) {
 export async function getStorageStats(baseURL) {
   return request(baseURL, "/storage/stats", {
     method: "GET"
+  });
+}
+
+export async function getSystemConfig(baseURL) {
+  return request(baseURL, "/system/config", {
+    method: "GET"
+  });
+}
+
+export async function updateSystemConfig(baseURL, content) {
+  return request(baseURL, "/system/config", {
+    method: "PUT",
+    body: JSON.stringify({ content })
   });
 }
 

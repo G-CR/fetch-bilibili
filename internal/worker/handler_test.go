@@ -769,6 +769,71 @@ func TestHandleCleanupSkipsOutOfPrintWhenProtected(t *testing.T) {
 	}
 }
 
+func TestHandleCleanupSkipsRecentlyDownloadedVideosWithinRetention(t *testing.T) {
+	dir := t.TempDir()
+	recentPath := buildVideoPath(dir, "bilibili", "recent")
+	oldPath := buildVideoPath(dir, "bilibili", "old")
+	if err := os.MkdirAll(filepath.Dir(recentPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(recentPath, []byte("12345"), 0o644); err != nil {
+		t.Fatalf("write recent file: %v", err)
+	}
+	if err := os.WriteFile(oldPath, []byte("67890"), 0o644); err != nil {
+		t.Fatalf("write old file: %v", err)
+	}
+
+	now := time.Now()
+	videos := &fakeVideos{
+		cleanupList: []repo.CleanupCandidate{
+			{
+				VideoID:              1,
+				SourceVideoID:        "recent",
+				Title:                "刚下载视频",
+				State:                "DOWNLOADED",
+				CreatorFollowerCount: 1,
+				ViewCount:            1,
+				FavoriteCount:        1,
+				FileID:               51,
+				FilePath:             recentPath,
+				FileSizeBytes:        5,
+				FileCreatedAt:        now.Add(-2 * time.Hour),
+			},
+			{
+				VideoID:              2,
+				SourceVideoID:        "old",
+				Title:                "老视频",
+				State:                "DOWNLOADED",
+				CreatorFollowerCount: 999,
+				ViewCount:            999,
+				FavoriteCount:        999,
+				FileID:               52,
+				FilePath:             oldPath,
+				FileSizeBytes:        5,
+				FileCreatedAt:        now.Add(-200 * time.Hour),
+			},
+		},
+	}
+	files := &fakeVideoFiles{
+		fileToVideo:  map[int64]int64{51: 1, 52: 2},
+		countByVideo: map[int64]int64{1: 1, 2: 1},
+	}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(10, 6, true)
+	h.SetCleanupRetention(168)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCleanup}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files.deletedIDs) != 1 || files.deletedIDs[0] != 52 {
+		t.Fatalf("expected old file deleted, got %+v", files.deletedIDs)
+	}
+	if videos.states[1] != "" {
+		t.Fatalf("expected recent video to be kept, got state %+v", videos.states)
+	}
+}
+
 func TestHandleCleanupCandidateShortage(t *testing.T) {
 	dir := t.TempDir()
 	path := buildVideoPath(dir, "bilibili", "keep")

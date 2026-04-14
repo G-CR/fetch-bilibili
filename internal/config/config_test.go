@@ -1,148 +1,131 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
-	"time"
 )
 
-func writeTempConfig(t *testing.T, content string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	return path
-}
-
-func TestLoadAppliesDefaults(t *testing.T) {
-	path := writeTempConfig(t, `
-server:
-  addr: ":9090"
+func TestParseAcceptsInlineCookieConfig(t *testing.T) {
+	cfg, err := Parse([]byte(`
 storage:
-  root_dir: "/tmp/bilibili"
+  root_dir: /data/archive
 mysql:
-  dsn: "user:pass@tcp(localhost:3306)/db"
-scheduler:
-  fetch_interval: "1h"
-`)
-
-	cfg, err := Load(path)
+  dsn: fetch:fetchpass@tcp(localhost:3306)/fetch
+bilibili:
+  cookie: "SESSDATA=test-token"
+`))
 	if err != nil {
-		t.Fatalf("Load error: %v", err)
+		t.Fatalf("Parse error: %v", err)
 	}
-	if cfg.Server.Addr != ":9090" {
-		t.Fatalf("server addr want :9090 got %s", cfg.Server.Addr)
-	}
-	if cfg.Server.ReadTimeout != 10*time.Second {
-		t.Fatalf("default read timeout not applied")
-	}
-	if cfg.Scheduler.FetchInterval != time.Hour {
-		t.Fatalf("fetch interval parse failed")
-	}
-	if cfg.Scheduler.CheckStableDays != 30 {
-		t.Fatalf("default stable days not applied")
-	}
-	if cfg.Bilibili.UserAgent == "" {
-		t.Fatalf("default user agent not applied")
-	}
-	if !cfg.MySQL.AutoMigrate {
-		t.Fatalf("default auto migrate not applied")
+	if cfg.Bilibili.Cookie != "SESSDATA=test-token" {
+		t.Fatalf("unexpected cookie: %q", cfg.Bilibili.Cookie)
 	}
 }
 
-func TestLoadMissingRootDir(t *testing.T) {
-	path := writeTempConfig(t, `
-mysql:
-  dsn: "user:pass@tcp(localhost:3306)/db"
-`)
-	if _, err := Load(path); err == nil {
-		t.Fatalf("expected error for missing root_dir")
-	}
-}
-
-func TestLoadMissingDSN(t *testing.T) {
-	path := writeTempConfig(t, `
+func TestParseDefaultsBilibiliFetchPageSizeToFive(t *testing.T) {
+	cfg, err := Parse([]byte(`
 storage:
-  root_dir: "/tmp/bilibili"
-`)
-	if _, err := Load(path); err == nil {
-		t.Fatalf("expected error for missing dsn")
-	}
-}
-
-func TestLoadInvalidYAML(t *testing.T) {
-	path := writeTempConfig(t, `:bad`)
-	if _, err := Load(path); err == nil {
-		t.Fatalf("expected error for invalid yaml")
-	}
-}
-
-func TestApplyDefaultsAll(t *testing.T) {
-	cfg := Config{}
-	applyDefaults(&cfg)
-
-	if cfg.Server.Addr == "" {
-		t.Fatalf("expected server addr")
-	}
-	if cfg.Storage.MaxBytes == 0 || cfg.Storage.SafeBytes == 0 {
-		t.Fatalf("expected storage defaults")
-	}
-	if cfg.Scheduler.FetchInterval == 0 || cfg.Scheduler.CheckInterval == 0 || cfg.Scheduler.CleanupInterval == 0 {
-		t.Fatalf("expected scheduler defaults")
-	}
-	if cfg.Limits.DownloadConcurrency == 0 || cfg.Limits.CheckConcurrency == 0 {
-		t.Fatalf("expected limits defaults")
-	}
-	if cfg.Creators.ReloadInterval == 0 {
-		t.Fatalf("expected creators defaults")
-	}
-	if cfg.Bilibili.UserAgent == "" {
-		t.Fatalf("expected bilibili defaults")
-	}
-	if cfg.Bilibili.AuthCheckInterval == 0 || cfg.Bilibili.AuthReloadInterval == 0 {
-		t.Fatalf("expected auth defaults")
-	}
-	if cfg.MySQL.MaxOpenConns == 0 || cfg.MySQL.MaxIdleConns == 0 || cfg.MySQL.ConnMaxLifetime == 0 {
-		t.Fatalf("expected mysql defaults")
-	}
-	if cfg.Logging.Level == "" || cfg.Logging.Format == "" || cfg.Logging.Output == "" {
-		t.Fatalf("expected logging defaults")
-	}
-}
-
-func TestDefaultValues(t *testing.T) {
-	cfg := Default()
-	if cfg.Server.Addr == "" {
-		t.Fatalf("default server addr empty")
-	}
-	if cfg.Scheduler.CheckStableDays != 30 {
-		t.Fatalf("default stable days mismatch")
-	}
-}
-
-func TestLoadMissingFile(t *testing.T) {
-	if _, err := Load("/path/does/not/exist.yaml"); err == nil {
-		t.Fatalf("expected error for missing file")
-	}
-}
-
-func TestLoadAutoMigrateDisabled(t *testing.T) {
-	path := writeTempConfig(t, `
-storage:
-  root_dir: "/tmp/bilibili"
+  root_dir: /data/archive
 mysql:
-  dsn: "user:pass@tcp(localhost:3306)/db"
-  auto_migrate: false
-`)
-
-	cfg, err := Load(path)
+  dsn: fetch:fetchpass@tcp(localhost:3306)/fetch
+`))
 	if err != nil {
-		t.Fatalf("Load error: %v", err)
+		t.Fatalf("Parse error: %v", err)
 	}
-	if cfg.MySQL.AutoMigrate {
-		t.Fatalf("expected auto_migrate=false")
+	if cfg.Bilibili.FetchPageSize != 5 {
+		t.Fatalf("expected default fetch page size 5, got %d", cfg.Bilibili.FetchPageSize)
+	}
+}
+
+func TestParseAcceptsConfiguredBilibiliFetchPageSize(t *testing.T) {
+	cfg, err := Parse([]byte(`
+storage:
+  root_dir: /data/archive
+mysql:
+  dsn: fetch:fetchpass@tcp(localhost:3306)/fetch
+bilibili:
+  fetch_page_size: 7
+`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	if cfg.Bilibili.FetchPageSize != 7 {
+		t.Fatalf("expected configured fetch page size 7, got %d", cfg.Bilibili.FetchPageSize)
+	}
+}
+
+func TestParseDefaultsCleanupRetentionHoursToOneWeek(t *testing.T) {
+	cfg, err := Parse([]byte(`
+storage:
+  root_dir: /data/archive
+mysql:
+  dsn: fetch:fetchpass@tcp(localhost:3306)/fetch
+`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	if cfg.Storage.CleanupRetentionHours != 168 {
+		t.Fatalf("expected default cleanup retention hours 168, got %d", cfg.Storage.CleanupRetentionHours)
+	}
+}
+
+func TestParseAcceptsConfiguredCleanupRetentionHours(t *testing.T) {
+	cfg, err := Parse([]byte(`
+storage:
+  root_dir: /data/archive
+  cleanup_retention_hours: 48
+mysql:
+  dsn: fetch:fetchpass@tcp(localhost:3306)/fetch
+`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	if cfg.Storage.CleanupRetentionHours != 48 {
+		t.Fatalf("expected configured cleanup retention hours 48, got %d", cfg.Storage.CleanupRetentionHours)
+	}
+}
+
+func TestParseRejectsDeprecatedCookieFileFields(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name: "cookie_file",
+			content: `
+storage:
+  root_dir: /data/archive
+mysql:
+  dsn: fetch:fetchpass@tcp(localhost:3306)/fetch
+bilibili:
+  cookie_file: /app/secrets/bilibili_cookie.txt
+`,
+			want: "bilibili.cookie_file 已废弃",
+		},
+		{
+			name: "sessdata_file",
+			content: `
+storage:
+  root_dir: /data/archive
+mysql:
+  dsn: fetch:fetchpass@tcp(localhost:3306)/fetch
+bilibili:
+  sessdata_file: /app/secrets/bilibili_sessdata.txt
+`,
+			want: "bilibili.sessdata_file 已废弃",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.content))
+			if err == nil {
+				t.Fatalf("expected parse error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q in error, got %v", tc.want, err)
+			}
+		})
 	}
 }

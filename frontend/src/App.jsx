@@ -1,5 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createCreator, deleteCreator, enqueueJob, formatRequestError, loadDashboardSnapshot } from "./lib/api";
+import { useEffect, useMemo, useState } from "react";
+import {
+  createCreator,
+  deleteCreator,
+  enqueueJob,
+  formatRequestError,
+  getSystemConfig,
+  loadDashboardSnapshot,
+  patchCreator,
+  updateSystemConfig
+} from "./lib/api";
 import {
   applyRemoteSnapshot,
   deriveCleanupPreview,
@@ -7,7 +16,6 @@ import {
   deriveTaskDiagnostics,
   loadState,
   makeLog,
-  nextJobId,
   saveState
 } from "./lib/state";
 
@@ -45,10 +53,23 @@ function App() {
     platform: "bilibili",
     status: "active"
   });
-  const timersRef = useRef([]);
+  const [configPath, setConfigPath] = useState("");
+  const [configText, setConfigText] = useState("");
+  const [savedConfigText, setSavedConfigText] = useState("");
+  const [configLoading, setConfigLoading] = useState(false);
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configValidation, setConfigValidation] = useState(() => ({
+    tone: "idle",
+    title: "尚未执行保存校验",
+    detail: "保存配置时会展示 YAML 与业务配置校验结果。"
+  }));
   const metrics = useMemo(() => deriveMetrics(state), [state]);
   const taskDiagnostics = useMemo(() => deriveTaskDiagnostics(state), [state]);
   const cleanupPreview = useMemo(() => deriveCleanupPreview(state, 5), [state]);
+  const configDiffPreview = useMemo(
+    () => deriveConfigDiffPreview(savedConfigText, configText),
+    [savedConfigText, configText]
+  );
   const selectedJob = useMemo(() => {
     const jobs = Array.isArray(state.jobs) ? state.jobs : [];
     return jobs.find((job) => job.id === selectedJobId) || jobs[0] || null;
@@ -82,15 +103,8 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (state.mode === "api") {
-      void syncDashboardFromAPI({ silent: true });
-    }
-  }, [state.mode]);
-
-  useEffect(() => {
-    return () => {
-      timersRef.current.forEach((timer) => window.clearTimeout(timer));
-    };
+    void syncDashboardFromAPI({ silent: true });
+    void loadSystemConfig({ silent: true });
   }, []);
 
   useEffect(() => {
@@ -163,6 +177,85 @@ function App() {
     }));
   }
 
+  async function loadSystemConfig({ silent = false } = {}) {
+    setConfigLoading(true);
+    try {
+      const payload = await getSystemConfig(state.apiBase);
+      const nextContent = String(payload?.content || "");
+      setConfigPath(String(payload?.path || ""));
+      setConfigText(nextContent);
+      setSavedConfigText(nextContent);
+      setConfigValidation({
+        tone: "success",
+        title: "配置已加载",
+        detail: "当前编辑器内容已经和后端配置文件同步。修改后保存时会再次执行校验。"
+      });
+      if (!silent) {
+        showToast("配置已加载");
+      }
+    } catch (error) {
+      const message = formatRequestError(error);
+      setConfigValidation({
+        tone: "error",
+        title: "配置加载失败",
+        detail: message
+      });
+      pushLog(`加载配置失败: ${message}`);
+      if (!silent) {
+        showToast(message);
+      }
+    } finally {
+      setConfigLoading(false);
+    }
+  }
+
+  async function handleSaveConfig() {
+    if (configText === savedConfigText) {
+      setConfigValidation({
+        tone: "idle",
+        title: "配置未变化",
+        detail: "当前编辑内容和后端文件一致，无需重启后端。"
+      });
+      showToast("配置未变化");
+      return;
+    }
+
+    setConfigSaving(true);
+    try {
+      const result = await updateSystemConfig(state.apiBase, configText);
+      setSavedConfigText(configText);
+      if (result?.path) {
+        setConfigPath(String(result.path));
+      }
+      setConfigValidation(
+        result?.changed
+          ? {
+              tone: "success",
+              title: "配置校验通过并已保存",
+              detail: "配置文件已写回磁盘，后端正在重启并重新加载最新配置。"
+            }
+          : {
+              tone: "idle",
+              title: "配置未变化",
+              detail: "保存请求已处理，但内容与原文件一致。"
+            }
+      );
+      pushLog(result?.changed ? `配置已保存，后端准备重启: ${result.path || configPath || "-"}` : "配置未变化");
+      showToast(result?.changed ? "配置已保存，后端正在重启" : "配置未变化");
+    } catch (error) {
+      const message = formatRequestError(error);
+      setConfigValidation({
+        tone: "error",
+        title: "配置校验失败",
+        detail: message
+      });
+      pushLog(`保存配置失败: ${message}`);
+      showToast(message);
+    } finally {
+      setConfigSaving(false);
+    }
+  }
+
   async function handleCreateCreator(event) {
     event.preventDefault();
     if (!form.uid.trim() && !form.name.trim()) {
@@ -170,38 +263,19 @@ function App() {
       return;
     }
 
-    if (state.mode === "api") {
-      setBusyAction("create");
-      try {
-        await createCreator(state.apiBase, form);
-        await refreshAfterMutation(`已通过 API 添加博主: ${form.name || form.uid}`);
-        showToast("博主已添加");
-        setForm({ uid: "", name: "", platform: "bilibili", status: "active" });
-      } catch (error) {
-        const message = formatRequestError(error);
-        pushLog(`添加失败: ${message}`);
-        showToast(message);
-      } finally {
-        setBusyAction("");
-      }
-      return;
+    setBusyAction("create");
+    try {
+      await createCreator(state.apiBase, form);
+      await refreshAfterMutation(`已通过 API 添加博主: ${form.name || form.uid}`);
+      showToast("博主已添加");
+      setForm({ uid: "", name: "", platform: "bilibili", status: "active" });
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`添加失败: ${message}`);
+      showToast(message);
+    } finally {
+      setBusyAction("");
     }
-
-    updateState((previous) => ({
-      ...previous,
-      creators: [
-        {
-          id: Date.now(),
-          ...form,
-          uid: form.uid.trim(),
-          name: form.name.trim()
-        },
-        ...previous.creators
-      ]
-    }));
-    pushLog(`本地添加博主: ${form.name || form.uid}`);
-    showToast("已添加到本地列表");
-    setForm({ uid: "", name: "", platform: "bilibili", status: "active" });
   }
 
   function scrollToSection(id) {
@@ -209,115 +283,55 @@ function App() {
   }
 
   async function handleAction(type) {
-    if (state.mode === "api") {
-      setBusyAction(type);
-      try {
-        await enqueueJob(state.apiBase, type);
-        await refreshAfterMutation(`已触发任务: ${jobText(type)}`);
-        showToast("任务已入队");
-      } catch (error) {
-        const message = formatRequestError(error);
-        pushLog(`触发任务失败: ${message}`);
-        showToast(message);
-      } finally {
-        setBusyAction("");
-      }
-      return;
+    setBusyAction(type);
+    try {
+      await enqueueJob(state.apiBase, type);
+      await refreshAfterMutation(`已触发任务: ${jobText(type)}`);
+      showToast("任务已入队");
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`触发任务失败: ${message}`);
+      showToast(message);
+    } finally {
+      setBusyAction("");
     }
-
-    const newJob = {
-      id: nextJobId(state.jobs),
-      type,
-      status: "queued",
-      origin: "manual"
-    };
-
-    updateState((previous) => ({
-      ...previous,
-      jobs: [newJob, ...previous.jobs].slice(0, 12),
-      system: {
-        ...previous.system,
-        activeJobs: previous.system.activeJobs + 1,
-        overview: {
-          ...previous.system.overview,
-          pendingJobs: (previous.system.overview?.pendingJobs || 0) + 1
-        }
-      }
-    }));
-    pushLog(`创建本地任务: ${jobText(type)}`);
-
-    timersRef.current.push(
-      window.setTimeout(() => {
-        updateState((previous) => ({
-          ...previous,
-          jobs: previous.jobs.map((job) =>
-            job.id === newJob.id ? { ...job, status: "running" } : job
-          )
-        }));
-      }, 500)
-    );
-
-    timersRef.current.push(
-      window.setTimeout(() => {
-        updateState((previous) => ({
-          ...previous,
-          jobs: previous.jobs.map((job) =>
-            job.id === newJob.id ? { ...job, status: "success" } : job
-          ),
-          system: {
-            ...previous.system,
-            activeJobs: Math.max(0, previous.system.activeJobs - 1),
-            overview: {
-              ...previous.system.overview,
-              pendingJobs: Math.max(0, (previous.system.overview?.pendingJobs || 1) - 1)
-            }
-          }
-        }));
-        pushLog(`本地任务完成: ${jobText(type)}`);
-      }, 2200)
-    );
   }
 
-  function toggleCreator(id) {
-    if (state.mode === "api") {
-      showToast("API 模式下当前列表仅支持只读");
+  async function toggleCreator(id) {
+    const creator = state.creators.find((item) => item.id === id);
+    if (!creator) {
+      showToast("博主不存在");
       return;
     }
-    updateState((previous) => ({
-      ...previous,
-      creators: previous.creators.map((creator) =>
-        creator.id === id
-          ? {
-              ...creator,
-              status: creator.status === "active" ? "paused" : "active"
-            }
-          : creator
-      )
-    }));
-    pushLog(`切换博主状态: #${id}`);
+
+    const nextStatus = creator.status === "active" ? "paused" : "active";
+    setBusyAction(`toggle-${id}`);
+    try {
+      await patchCreator(state.apiBase, id, { status: nextStatus });
+      await refreshAfterMutation(`已通过 API 更新博主状态: #${id} -> ${nextStatus}`);
+      showToast(nextStatus === "active" ? "已启用" : "已暂停");
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`更新博主状态失败: ${message}`);
+      showToast(message);
+    } finally {
+      setBusyAction("");
+    }
   }
 
   async function removeCreator(id) {
-    if (state.mode === "api") {
-      setBusyAction(`remove-${id}`);
-      try {
-        await deleteCreator(state.apiBase, id);
-        await refreshAfterMutation(`已通过 API 停止追踪博主: #${id}`);
-        showToast("已停止追踪");
-      } catch (error) {
-        const message = formatRequestError(error);
-        pushLog(`停止追踪失败: ${message}`);
-        showToast(message);
-      } finally {
-        setBusyAction("");
-      }
-      return;
+    setBusyAction(`remove-${id}`);
+    try {
+      await deleteCreator(state.apiBase, id);
+      await refreshAfterMutation(`已通过 API 停止追踪博主: #${id}`);
+      showToast("已停止追踪");
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`停止追踪失败: ${message}`);
+      showToast(message);
+    } finally {
+      setBusyAction("");
     }
-    updateState((previous) => ({
-      ...previous,
-      creators: previous.creators.filter((creator) => creator.id !== id)
-    }));
-    pushLog(`停止追踪本地博主: #${id}`);
   }
 
   const storagePercent = `${metrics.storagePercent}%`;
@@ -326,6 +340,7 @@ function App() {
   const cookieSourceLabel = cookieSourceText(state.system.cookieSource);
   const riskBackoffLabel = riskBackoffText(state.system.riskActive, state.system.riskBackoffSeconds);
   const cleanupPressureBytes = Math.max(0, Number(state.storage.usedBytes || 0) - Number(state.storage.safeBytes || 0));
+  const configDirty = configText !== savedConfigText;
 
   return (
     <div className="shell">
@@ -341,7 +356,7 @@ function App() {
         <div className="status-panel">
           <div className={`health-dot health-dot--${state.system.health}`} />
           <div>
-            <div className="status-label">{state.mode === "api" ? "API 模式" : "本地模式"}</div>
+            <div className="status-label">后端接口</div>
             <div className="status-meta">{healthLabel}</div>
           </div>
         </div>
@@ -380,23 +395,14 @@ function App() {
           <div>
             <p className="eyebrow">系统总览</p>
             <h2>绝版视频库</h2>
-            <p className="command-copy">
-              用于查看博主追踪、任务执行、视频状态与存储情况；
-              {state.mode === "api" ? "当前为 API 模式。" : "当前为本地模式。"}
-            </p>
+            <p className="command-copy">用于查看博主追踪、任务执行、视频状态与存储情况；当前数据来自后端接口。</p>
           </div>
           <div className="command-actions">
             <button
               type="button"
               className="secondary-button"
               data-testid="sync-button"
-              onClick={() => {
-                if (state.mode === "api") {
-                  void syncDashboardFromAPI();
-                } else {
-                  showToast("本地模式无需同步");
-                }
-              }}
+              onClick={() => void syncDashboardFromAPI()}
               disabled={busyAction === "sync"}
             >
               {busyAction === "sync" ? "同步中..." : "同步数据"}
@@ -462,7 +468,7 @@ function App() {
                 <span className="pill">风险 {state.system.riskLevel}</span>
               </div>
               <div className="signal-grid">
-                <SignalItem label="连接模式" value={state.mode === "api" ? "API 模式" : "本地模式"} />
+                <SignalItem label="数据来源" value="后端接口" />
                 <SignalItem label="系统健康" value={healthLabel} />
                 <SignalItem label="热点目录" value={state.storage.hottestBucket || "-"} />
                 <SignalItem label="最近任务" value={formatDateTime(state.system.lastJobAt)} />
@@ -478,9 +484,7 @@ function App() {
                 <p className="section-kicker">博主管理</p>
                 <h3>博主管理与追踪状态</h3>
               </div>
-              <span className="pill pill--soft">
-                {state.mode === "api" ? "列表来自后端" : "本地模式可编辑"}
-              </span>
+              <span className="pill pill--soft">列表来自后端</span>
             </div>
 
             <form className="creator-form" onSubmit={handleCreateCreator}>
@@ -545,10 +549,20 @@ function App() {
                   <span>{creator.platform}</span>
                   <span>{creator.status}</span>
                   <span className="row-actions">
-                    <button type="button" className="ghost-link" onClick={() => toggleCreator(creator.id)}>
+                    <button
+                      type="button"
+                      className="ghost-link"
+                      onClick={() => toggleCreator(creator.id)}
+                      disabled={busyAction === `toggle-${creator.id}`}
+                    >
                       {creator.status === "active" ? "暂停" : "启用"}
                     </button>
-                    <button type="button" className="ghost-link" onClick={() => removeCreator(creator.id)}>
+                    <button
+                      type="button"
+                      className="ghost-link"
+                      onClick={() => removeCreator(creator.id)}
+                      disabled={busyAction === `remove-${creator.id}`}
+                    >
                       停止追踪
                     </button>
                   </span>
@@ -805,37 +819,6 @@ function App() {
                 <h3>前端连接设置</h3>
               </div>
             </div>
-            <div className="settings-group">
-              <label className="radio">
-                <input
-                  type="radio"
-                  name="mode"
-                  checked={state.mode === "local"}
-                  onChange={() =>
-                    updateState((previous) => ({
-                      ...previous,
-                      mode: "local",
-                      system: { ...previous.system, health: "online", lastSyncAt: "本地模式" }
-                    }))
-                  }
-                />
-                <span>本地模式</span>
-              </label>
-              <label className="radio">
-                <input
-                  type="radio"
-                  name="mode"
-                  checked={state.mode === "api"}
-                  onChange={() =>
-                    updateState((previous) => ({
-                      ...previous,
-                      mode: "api"
-                    }))
-                  }
-                />
-                <span>API 模式</span>
-              </label>
-            </div>
             <label className="settings-field">
               API 地址
               <input
@@ -849,7 +832,116 @@ function App() {
                 placeholder="http://localhost:8080"
               />
             </label>
-            <p className="panel-note">当前后端已开放 CORS，可直接从独立前端访问。</p>
+            <p className="panel-note">修改 API 地址后，点击“同步数据”即可重新拉取后端数据。</p>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <p className="section-kicker">配置状态</p>
+                <h3>系统配置文件</h3>
+              </div>
+              <span className={configDirty ? "pill pill--warning" : "pill pill--soft"}>
+                {configDirty ? "有未保存修改" : "已与文件同步"}
+              </span>
+            </div>
+            <div className="config-meta">
+              <span className="config-meta__label">配置路径</span>
+              <code className="config-meta__value">{configPath || "-"}</code>
+            </div>
+            <p className="panel-note">保存前会先校验 YAML 与业务配置；保存成功后，后端容器会自动重启以加载新配置。</p>
+          </div>
+
+          <div className="panel panel--span config-editor">
+            <div className="panel-header">
+              <div>
+                <p className="section-kicker">文件编辑</p>
+                <h3>配置文件编辑</h3>
+              </div>
+              <div className="config-toolbar">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void loadSystemConfig()}
+                  disabled={configLoading || configSaving}
+                >
+                  {configLoading ? "加载中..." : "重新加载"}
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  data-testid="config-save-button"
+                  onClick={() => void handleSaveConfig()}
+                  disabled={configLoading || configSaving}
+                >
+                  {configSaving ? "保存中..." : "保存配置"}
+                </button>
+              </div>
+            </div>
+
+            <div className="config-status">
+              <span>{configLoading ? "正在从后端读取配置文件" : "当前编辑内容来自后端配置文件"}</span>
+              <span>{configDirty ? "检测到未保存修改" : "当前内容未修改"}</span>
+            </div>
+
+            <label className="settings-field">
+              配置内容
+              <textarea
+                data-testid="config-editor"
+                className="config-textarea"
+                value={configText}
+                onChange={(event) => setConfigText(event.target.value)}
+                placeholder="server:\n  http_addr: :8080"
+                spellCheck="false"
+              />
+            </label>
+
+            <div className="config-inspector">
+              <div className="config-card">
+                <div className="panel-header">
+                  <div>
+                    <p className="section-kicker">变更检查</p>
+                    <h3>保存前差异预览</h3>
+                  </div>
+                  <span className="pill pill--soft">
+                    {configDiffPreview.total} 处变更
+                  </span>
+                </div>
+                <div className="config-diff-list" data-testid="config-diff-preview">
+                  {configDiffPreview.lines.length > 0 ? (
+                    configDiffPreview.lines.map((line) => (
+                      <div
+                        key={`${line.type}-${line.lineNumber}-${line.text}`}
+                        className={
+                          line.type === "add" ? "config-diff-line config-diff-line--add" : "config-diff-line config-diff-line--remove"
+                        }
+                      >
+                        <span className="config-diff-prefix">{line.type === "add" ? "+" : "-"}</span>
+                        <span className="config-diff-number">L{line.lineNumber}</span>
+                        <code className="config-diff-text">{line.text || "(空行)"}</code>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="panel-note">当前没有未保存差异。</p>
+                  )}
+                  {configDiffPreview.truncated ? <p className="panel-note">仅展示前 12 行差异，完整内容请以编辑器为准。</p> : null}
+                </div>
+              </div>
+
+              <div className={`config-card config-card--${configValidation.tone}`}>
+                <div className="panel-header">
+                  <div>
+                    <p className="section-kicker">校验反馈</p>
+                    <h3>校验结果详情</h3>
+                  </div>
+                  <span className="pill pill--soft">{configValidationText(configValidation.tone)}</span>
+                </div>
+                <div className="config-validation" data-testid="config-validation-detail">
+                  <strong className="config-validation__title">{configValidation.title}</strong>
+                  <p className="config-validation__detail">{configValidation.detail}</p>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="panel">
@@ -915,6 +1007,46 @@ function DetailItem({ label, value }) {
 
 function StatusBadge({ status }) {
   return <span className={`status-badge status-badge--${statusTone(status)}`}>{statusText(status)}</span>;
+}
+
+function deriveConfigDiffPreview(previousText, nextText, limit = 12) {
+  const before = String(previousText || "").split("\n");
+  const after = String(nextText || "").split("\n");
+  const maxLength = Math.max(before.length, after.length);
+  const lines = [];
+  let total = 0;
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const prevLine = before[index];
+    const nextLine = after[index];
+    if (prevLine === nextLine) {
+      continue;
+    }
+    total += 1;
+    if (prevLine !== undefined && lines.length < limit) {
+      lines.push({ type: "remove", lineNumber: index + 1, text: prevLine });
+    }
+    if (nextLine !== undefined && lines.length < limit) {
+      lines.push({ type: "add", lineNumber: index + 1, text: nextLine });
+    }
+  }
+
+  return {
+    total,
+    lines,
+    truncated: total > limit
+  };
+}
+
+function configValidationText(tone) {
+  switch (tone) {
+    case "success":
+      return "通过";
+    case "error":
+      return "失败";
+    default:
+      return "待校验";
+  }
 }
 
 function VideoStateBadge({ state }) {

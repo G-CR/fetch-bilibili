@@ -55,28 +55,11 @@ cd ..
 docker compose up -d --build
 ```
 
-### 5.2 Cookie 文件挂载示例
-当使用 `bilibili.cookie_file` / `bilibili.sessdata_file` 时，建议通过只读挂载提供文件：
+### 5.2 博主列表文件挂载示例
 ```yaml
   app:
     volumes:
-      - ./configs/config.yaml:/app/config.yaml:ro
-      - ./secrets/bilibili_cookie.txt:/app/secrets/bilibili_cookie.txt:ro
-    environment:
-      FETCH_CONFIG: /app/config.yaml
-```
-
-并在配置文件中指向容器内路径：
-```yaml
-bilibili:
-  cookie_file: "/app/secrets/bilibili_cookie.txt"
-```
-
-### 5.3 博主列表文件挂载示例
-```yaml
-  app:
-    volumes:
-      - ./configs/config.yaml:/app/config.yaml:ro
+      - ./configs/config.yaml:/app/config.yaml
       - ./configs/creators.yaml:/app/creators.yaml:ro
 ```
 

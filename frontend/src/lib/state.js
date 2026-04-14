@@ -1,64 +1,25 @@
 const STORAGE_KEY = "bili-vault-dashboard-v3";
-const GIB = 1024 ** 3;
 
 export function createDefaultState() {
   return {
-    mode: "api",
     apiBase: "http://localhost:8080",
-    creators: [
-      { id: 101, uid: "123456", name: "示例博主", platform: "bilibili", status: "active" },
-      { id: 102, uid: "987654", name: "科技区UP主", platform: "bilibili", status: "active" },
-      { id: 103, uid: "456789", name: "收藏向频道", platform: "bilibili", status: "paused" }
-    ],
-    videos: [
-      {
-        id: 1,
-        title: "年度合集",
-        videoId: "BV1demo001",
-        state: "OUT_OF_PRINT",
-        publishTime: "",
-        viewCount: 188000,
-        favoriteCount: 2100
-      },
-      {
-        id: 2,
-        title: "幕后花絮",
-        videoId: "BV1demo002",
-        state: "STABLE",
-        publishTime: "",
-        viewCount: 86000,
-        favoriteCount: 980
-      },
-      {
-        id: 3,
-        title: "新作预告",
-        videoId: "BV1demo003",
-        state: "DOWNLOADING",
-        publishTime: "",
-        viewCount: 56000,
-        favoriteCount: 520
-      }
-    ],
-    jobs: [
-      { id: 1, type: "fetch", status: "success", origin: "scheduler" },
-      { id: 2, type: "download", status: "running", origin: "worker" },
-      { id: 3, type: "check", status: "queued", origin: "manual" }
-    ],
+    creators: [],
+    videos: [],
+    jobs: [],
     logs: [
-      makeLog("系统已加载默认面板数据"),
-      makeLog("已启用本地 / API 双模式切换"),
-      makeLog("等待下一次后端同步")
+      makeLog("前端已切换为后端接口模式"),
+      makeLog("等待首次同步")
     ],
     storage: {
-      usedBytes: 268 * GIB,
-      limitBytes: 2048 * GIB,
-      safeBytes: 1843 * GIB,
-      hottestBucket: "绝版视频",
+      usedBytes: 0,
+      limitBytes: 0,
+      safeBytes: 0,
+      hottestBucket: "",
       cleanupRule: "绝版优先 -> 粉丝量 -> 播放量 -> 收藏量",
-      fileCount: 426,
-      usagePercent: 13,
-      rareVideos: 1,
-      rootDir: "/data/archive"
+      fileCount: 0,
+      usagePercent: 0,
+      rareVideos: 0,
+      rootDir: ""
     },
     limits: {
       globalQps: 2,
@@ -73,11 +34,11 @@ export function createDefaultState() {
       stableDays: 30
     },
     system: {
-      health: "online",
-      lastSyncAt: "等待同步",
-      activeJobs: 2,
+      health: "unknown",
+      lastSyncAt: "未同步",
+      activeJobs: 0,
       authEnabled: false,
-      riskLevel: "低",
+      riskLevel: "未知",
       riskActive: false,
       riskBackoffUntil: "",
       riskBackoffSeconds: 0,
@@ -95,11 +56,11 @@ export function createDefaultState() {
       cookieLastReloadResult: "",
       cookieLastError: "",
       lastJobAt: "",
-      storageRoot: "/data/archive",
+      storageRoot: "",
       overview: {
-        activeCreators: 3,
-        pendingJobs: 2,
-        rareVideos: 1
+        activeCreators: 0,
+        pendingJobs: 0,
+        rareVideos: 0
       }
     }
   };
@@ -117,13 +78,15 @@ export function loadState() {
       return defaults;
     }
     const parsed = JSON.parse(raw);
+    const { mode: _legacyMode, ...rest } = parsed || {};
+    const isLegacyLocalMode = parsed?.mode === "local";
     return {
       ...defaults,
-      ...parsed,
-      creators: Array.isArray(parsed?.creators) ? parsed.creators : defaults.creators,
-      videos: Array.isArray(parsed?.videos) ? parsed.videos : defaults.videos,
-      jobs: Array.isArray(parsed?.jobs) ? parsed.jobs : defaults.jobs,
-      logs: Array.isArray(parsed?.logs) ? parsed.logs : defaults.logs,
+      ...rest,
+      creators: isLegacyLocalMode ? defaults.creators : Array.isArray(parsed?.creators) ? parsed.creators : defaults.creators,
+      videos: isLegacyLocalMode ? defaults.videos : Array.isArray(parsed?.videos) ? parsed.videos : defaults.videos,
+      jobs: isLegacyLocalMode ? defaults.jobs : Array.isArray(parsed?.jobs) ? parsed.jobs : defaults.jobs,
+      logs: isLegacyLocalMode ? defaults.logs : Array.isArray(parsed?.logs) ? parsed.logs : defaults.logs,
       storage: {
         ...defaults.storage,
         ...(parsed?.storage || {})
@@ -266,11 +229,6 @@ export function makeLog(message) {
     at: new Date().toLocaleString("zh-CN", { hour12: false }),
     message
   };
-}
-
-export function nextJobId(jobs) {
-  const max = (jobs || []).reduce((current, job) => Math.max(current, Number(job.id) || 0), 0);
-  return max + 1;
 }
 
 function normalizeCreators(items) {

@@ -41,7 +41,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -335,6 +336,12 @@ button {
   color: var(--text-soft);
   border-color: var(--line);
   background: rgba(255, 255, 255, 0.04);
+}
+
+.pill--warning {
+  color: #ffd59b;
+  border-color: rgba(246, 184, 95, 0.28);
+  background: rgba(246, 184, 95, 0.12);
 }
 
 .metric-grid,
@@ -634,7 +641,8 @@ label,
 }
 
 input,
-select {
+select,
+textarea {
   min-height: 42px;
   width: 100%;
   padding: 0 14px;
@@ -645,10 +653,163 @@ select {
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   outline: none;
   border-color: rgba(83, 185, 255, 0.36);
   box-shadow: 0 0 0 3px rgba(83, 185, 255, 0.12);
+}
+
+textarea {
+  resize: vertical;
+}
+
+.config-editor {
+  position: relative;
+  overflow: hidden;
+}
+
+.config-editor::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(135deg, rgba(83, 185, 255, 0.05), transparent 34%),
+    linear-gradient(315deg, rgba(255, 118, 183, 0.05), transparent 26%);
+  pointer-events: none;
+}
+
+.config-toolbar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.config-meta {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.config-meta__label {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-family: "IBM Plex Mono", monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.config-meta__value {
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.config-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.config-textarea {
+  min-height: 380px;
+  padding: 16px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.config-inspector {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.config-card {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.config-card--success {
+  border-color: rgba(92, 211, 154, 0.22);
+  background: rgba(92, 211, 154, 0.05);
+}
+
+.config-card--error {
+  border-color: rgba(255, 111, 134, 0.24);
+  background: rgba(255, 111, 134, 0.06);
+}
+
+.config-diff-list,
+.config-validation {
+  display: grid;
+  gap: 10px;
+}
+
+.config-diff-line {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(7, 10, 14, 0.68);
+}
+
+.config-diff-line--add {
+  border-color: rgba(92, 211, 154, 0.24);
+  background: rgba(92, 211, 154, 0.06);
+}
+
+.config-diff-line--remove {
+  border-color: rgba(255, 111, 134, 0.24);
+  background: rgba(255, 111, 134, 0.06);
+}
+
+.config-diff-prefix,
+.config-diff-number,
+.config-diff-text,
+.config-validation__title {
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.config-diff-prefix {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.config-diff-number {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.config-diff-text {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.config-validation__title {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.config-validation__detail {
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.7;
 }
 
 .table-header,
@@ -791,6 +952,14 @@ select:focus {
   .table-row span:nth-child(4) {
     color: var(--text-dim);
     font-size: 13px;
+  }
+
+  .config-status {
+    flex-direction: column;
+  }
+
+  .config-inspector {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -13,6 +13,7 @@ import (
 
 type Resolver interface {
 	ResolveUID(ctx context.Context, keyword string) (string, string, error)
+	ResolveName(ctx context.Context, uid string) (string, error)
 }
 
 var ErrInvalidPatch = errors.New("博主 patch 参数无效")
@@ -88,6 +89,9 @@ func (s *Service) prepareCreator(ctx context.Context, entry Entry) (repo.Creator
 		}
 		s.logger.Printf("名称解析成功 name=%s uid=%s", entry.Name, uid)
 	}
+	if name == "" {
+		name = s.resolveNameByUID(ctx, uid)
+	}
 
 	return repo.Creator{
 		Platform: platform,
@@ -101,7 +105,12 @@ func (s *Service) ListActive(ctx context.Context, limit int) ([]repo.Creator, er
 	if s.repo == nil {
 		return nil, errors.New("博主服务未初始化")
 	}
-	return s.repo.ListActive(ctx, limit)
+	creators, err := s.repo.ListActive(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	s.backfillCreatorNames(ctx, creators)
+	return creators, nil
 }
 
 func (s *Service) Patch(ctx context.Context, id int64, patch Patch) (repo.Creator, error) {
@@ -184,4 +193,52 @@ func (s *Service) upsertFromFile(ctx context.Context, entry Entry) (repo.Creator
 	}
 	creator.ID = id
 	return creator, false, nil
+}
+
+func (s *Service) resolveNameByUID(ctx context.Context, uid string) string {
+	if s.resolver == nil {
+		return ""
+	}
+	uid = strings.TrimSpace(uid)
+	if uid == "" {
+		return ""
+	}
+	name, err := s.resolver.ResolveName(ctx, uid)
+	if err != nil {
+		s.logger.Printf("根据 UID 补齐博主名称失败 uid=%s: %v", uid, err)
+		return ""
+	}
+	name = strings.TrimSpace(name)
+	if name != "" {
+		s.logger.Printf("根据 UID 补齐博主名称成功 uid=%s name=%s", uid, name)
+	}
+	return name
+}
+
+func (s *Service) backfillCreatorNames(ctx context.Context, creators []repo.Creator) {
+	if s.repo == nil || s.resolver == nil {
+		return
+	}
+	for idx := range creators {
+		if strings.TrimSpace(creators[idx].Name) != "" {
+			continue
+		}
+		name := s.resolveNameByUID(ctx, creators[idx].UID)
+		if name == "" {
+			continue
+		}
+		creators[idx].Name = name
+		if creators[idx].Platform == "" {
+			creators[idx].Platform = "bilibili"
+		}
+		if creators[idx].Status == "" {
+			creators[idx].Status = "active"
+		}
+		if creators[idx].ID <= 0 {
+			continue
+		}
+		if err := s.repo.Update(ctx, creators[idx]); err != nil {
+			s.logger.Printf("回填博主名称入库失败 id=%d uid=%s: %v", creators[idx].ID, creators[idx].UID, err)
+		}
+	}
 }

@@ -94,6 +94,7 @@ func TestNewSuccess(t *testing.T) {
 	origRouter := newRouter
 	origDashboardService := newDashboardService
 	origRunMySQLMigrations := runMySQLMigrations
+	origRunStartupRecovery := runStartupRecovery
 	defer func() {
 		newMySQL = origMySQL
 		newScheduler = origScheduler
@@ -101,6 +102,7 @@ func TestNewSuccess(t *testing.T) {
 		newRouter = origRouter
 		newDashboardService = origDashboardService
 		runMySQLMigrations = origRunMySQLMigrations
+		runStartupRecovery = origRunStartupRecovery
 	}()
 
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
@@ -121,7 +123,7 @@ func TestNewSuccess(t *testing.T) {
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
-	newRouter = func(_ httpapi.CreatorService, _ httpapi.JobService, gotDashboard httpapi.DashboardService) http.Handler {
+	newRouter = func(_ httpapi.CreatorService, _ httpapi.JobService, gotDashboard httpapi.DashboardService, _ httpapi.ConfigService) http.Handler {
 		if gotDashboard != dashboardSvc {
 			t.Fatalf("expected dashboard service injected")
 		}
@@ -247,7 +249,10 @@ func TestRunCanceled(t *testing.T) {
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService) http.Handler {
+	runStartupRecovery = func(context.Context, *App) error {
+		return nil
+	}
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService) http.Handler {
 		return http.NewServeMux()
 	}
 
@@ -262,8 +267,17 @@ func TestRunCanceled(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for (atomic.LoadInt32(&schedulerStub.started) == 0 || atomic.LoadInt32(&workerStub.started) == 0) && time.Now().Before(deadline) {
+		time.Sleep(1 * time.Millisecond)
+	}
 	cancel()
-	if err := app.Run(ctx); !errors.Is(err, context.Canceled) {
+	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 
@@ -307,6 +321,14 @@ func TestRunNoSchedulerOrWorker(t *testing.T) {
 		server: &http.Server{Addr: "127.0.0.1:0"},
 	}
 
+	origRunStartupRecovery := runStartupRecovery
+	defer func() {
+		runStartupRecovery = origRunStartupRecovery
+	}()
+	runStartupRecovery = func(context.Context, *App) error {
+		return nil
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := app.Run(ctx); !errors.Is(err, context.Canceled) {
@@ -328,6 +350,7 @@ func TestRunStartsCreatorSyncer(t *testing.T) {
 	origCreatorSyncer := newCreatorSyncer
 	origDashboardService := newDashboardService
 	origRunMySQLMigrations := runMySQLMigrations
+	origRunStartupRecovery := runStartupRecovery
 	defer func() {
 		newMySQL = origMySQL
 		newScheduler = origScheduler
@@ -336,6 +359,7 @@ func TestRunStartsCreatorSyncer(t *testing.T) {
 		newCreatorSyncer = origCreatorSyncer
 		newDashboardService = origDashboardService
 		runMySQLMigrations = origRunMySQLMigrations
+		runStartupRecovery = origRunStartupRecovery
 	}()
 
 	syncerStub := &stubCreatorSyncer{}
@@ -354,7 +378,10 @@ func TestRunStartsCreatorSyncer(t *testing.T) {
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService) http.Handler {
+	runStartupRecovery = func(context.Context, *App) error {
+		return nil
+	}
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService) http.Handler {
 		return http.NewServeMux()
 	}
 	newCreatorSyncer = func(service *creator.Service, filePath string, interval time.Duration) creatorSyncRunner {
@@ -426,7 +453,7 @@ func TestNewRunsMySQLMigrationsWhenEnabled(t *testing.T) {
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
 		return &stubHTTPDashboardService{}
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService) http.Handler {
 		return http.NewServeMux()
 	}
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
@@ -483,7 +510,7 @@ func TestNewSkipsMySQLMigrationsWhenDisabled(t *testing.T) {
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
 		return &stubHTTPDashboardService{}
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService) http.Handler {
 		return http.NewServeMux()
 	}
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
@@ -547,7 +574,7 @@ func TestNewCreatesAuthWatcherWhenCookieConfigured(t *testing.T) {
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService) http.Handler {
 		return http.NewServeMux()
 	}
 	newAuthWatcher = func(client bilibili.AuthClient, reloadInterval, checkInterval time.Duration) authWatcherRunner {

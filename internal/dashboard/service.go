@@ -286,9 +286,7 @@ func (s *Service) buildRiskStatus(runtime bilibili.RuntimeStatus) RiskStatus {
 
 func isCookieConfigured(cfg config.Config) bool {
 	return cfg.Bilibili.Cookie != "" ||
-		cfg.Bilibili.SESSDATA != "" ||
-		cfg.Bilibili.CookieFile != "" ||
-		cfg.Bilibili.SESSDATAFile != ""
+		cfg.Bilibili.SESSDATA != ""
 }
 
 func scanStorage(root string) (int64, int64, string, error) {

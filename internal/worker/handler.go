@@ -26,24 +26,25 @@ type VideoClient interface {
 }
 
 type DefaultHandler struct {
-	creators     repo.CreatorRepository
-	videos       repo.VideoRepository
-	videoFiles   repo.VideoFileRepository
-	jobs         repo.JobRepository
-	client       VideoClient
-	stableDays   int
-	storageRoot  string
-	logger       *log.Logger
-	fetchLimit   int
-	checkLimit   int
-	globalLimit  *limiter
-	perLimitQPS  int
-	perLimitMu   sync.Mutex
-	perLimiters  map[int64]*limiter
-	storageMax   int64
-	storageSafe  int64
-	keepRare     bool
-	cleanupLimit int
+	creators         repo.CreatorRepository
+	videos           repo.VideoRepository
+	videoFiles       repo.VideoFileRepository
+	jobs             repo.JobRepository
+	client           VideoClient
+	stableDays       int
+	storageRoot      string
+	logger           *log.Logger
+	fetchLimit       int
+	checkLimit       int
+	globalLimit      *limiter
+	perLimitQPS      int
+	perLimitMu       sync.Mutex
+	perLimiters      map[int64]*limiter
+	storageMax       int64
+	storageSafe      int64
+	keepRare         bool
+	cleanupRetention time.Duration
+	cleanupLimit     int
 }
 
 func NewDefaultHandler(creators repo.CreatorRepository, videos repo.VideoRepository, videoFiles repo.VideoFileRepository, jobs repo.JobRepository, client VideoClient, stableDays int, storageRoot string, globalQPS, perCreatorQPS int, logger *log.Logger) *DefaultHandler {
@@ -80,6 +81,14 @@ func (h *DefaultHandler) SetStoragePolicy(maxBytes, safeBytes int64, keepOutOfPr
 	}
 	h.storageSafe = safeBytes
 	h.keepRare = keepOutOfPrint
+}
+
+func (h *DefaultHandler) SetCleanupRetention(hours int) {
+	if hours <= 0 {
+		h.cleanupRetention = 0
+		return
+	}
+	h.cleanupRetention = time.Duration(hours) * time.Hour
 }
 
 func (h *DefaultHandler) Handle(ctx context.Context, job repo.Job) error {
@@ -205,6 +214,11 @@ func (h *DefaultHandler) handleCleanup(ctx context.Context) error {
 		return fmt.Errorf("清理候选不足：当前占用 %d 字节，目标释放 %d 字节", usedBytes, targetBytes)
 	}
 
+	candidates = h.filterCleanupCandidates(candidates)
+	if len(candidates) == 0 {
+		return fmt.Errorf("清理候选不足：当前占用 %d 字节，目标释放 %d 字节", usedBytes, targetBytes)
+	}
+
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return lessCleanupCandidate(candidates[i], candidates[j])
 	})
@@ -235,6 +249,21 @@ func (h *DefaultHandler) handleCleanup(ctx context.Context) error {
 
 	h.logger.Printf("清理任务完成：已释放 %d 字节，目标 %d 字节", freedBytes, targetBytes)
 	return nil
+}
+
+func (h *DefaultHandler) filterCleanupCandidates(candidates []repo.CleanupCandidate) []repo.CleanupCandidate {
+	if h.cleanupRetention <= 0 {
+		return candidates
+	}
+	now := time.Now()
+	out := make([]repo.CleanupCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !candidate.FileCreatedAt.IsZero() && candidate.FileCreatedAt.Add(h.cleanupRetention).After(now) {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
 }
 
 func (h *DefaultHandler) cleanupTarget(usedBytes int64) int64 {

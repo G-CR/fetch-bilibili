@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -63,6 +64,8 @@ var runStartupRecovery = func(ctx context.Context, app *App) error {
 	return app.recoverRuntimeState(ctx)
 }
 
+var ErrRestartRequested = errors.New("restart requested")
+
 type App struct {
 	cfg         config.Config
 	db          *sql.DB
@@ -72,6 +75,34 @@ type App struct {
 	authWatcher authWatcherRunner
 	creatorSync creatorSyncRunner
 	server      *http.Server
+	restartCh   chan struct{}
+}
+
+type configEditorAdapter struct {
+	editor *config.Editor
+}
+
+func (a configEditorAdapter) Load(ctx context.Context) (httpapi.ConfigDocument, error) {
+	doc, err := a.editor.Load(ctx)
+	if err != nil {
+		return httpapi.ConfigDocument{}, err
+	}
+	return httpapi.ConfigDocument{
+		Path:    doc.Path,
+		Content: doc.Content,
+	}, nil
+}
+
+func (a configEditorAdapter) Save(ctx context.Context, content string) (httpapi.ConfigSaveResult, error) {
+	result, err := a.editor.Save(ctx, content)
+	if err != nil {
+		return httpapi.ConfigSaveResult{}, err
+	}
+	return httpapi.ConfigSaveResult{
+		Changed:          result.Changed,
+		RestartScheduled: result.RestartScheduled,
+		Path:             result.Path,
+	}, nil
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -116,10 +147,11 @@ func New(cfg config.Config) (*App, error) {
 		nil,
 	)
 	handler.SetStoragePolicy(cfg.Storage.MaxBytes, cfg.Storage.SafeBytes, cfg.Storage.KeepOutOfPrint)
+	handler.SetCleanupRetention(cfg.Storage.CleanupRetentionHours)
 	pool := newWorker(repos.Jobs, handler, cfg.Limits.DownloadConcurrency, 2*time.Second)
 
 	var authWatcher authWatcherRunner
-	if cfg.Bilibili.Cookie != "" || cfg.Bilibili.SESSDATA != "" || cfg.Bilibili.CookieFile != "" || cfg.Bilibili.SESSDATAFile != "" {
+	if cfg.Bilibili.Cookie != "" || cfg.Bilibili.SESSDATA != "" {
 		authWatcher = newAuthWatcher(client, cfg.Bilibili.AuthReloadInterval, cfg.Bilibili.AuthCheckInterval)
 	}
 
@@ -129,15 +161,7 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	dashboardService := newDashboardService(database, repos.Creators, repos.Videos, repos.Jobs, client, cfg)
-	router := newRouter(creatorService, jobService, dashboardService)
-	server := &http.Server{
-		Addr:         cfg.Server.Addr,
-		Handler:      router,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-	}
-
-	return &App{
+	app := &App{
 		cfg:         cfg,
 		db:          database,
 		repos:       repos,
@@ -145,8 +169,18 @@ func New(cfg config.Config) (*App, error) {
 		workers:     pool,
 		authWatcher: authWatcher,
 		creatorSync: creatorSync,
-		server:      server,
-	}, nil
+		restartCh:   make(chan struct{}, 1),
+	}
+	configEditor := config.NewEditor(resolveConfigPath(), app.requestRestart)
+	router := newRouter(creatorService, jobService, dashboardService, configEditorAdapter{editor: configEditor})
+	server := &http.Server{
+		Addr:         cfg.Server.Addr,
+		Handler:      router,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+	}
+	app.server = server
+	return app, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -174,20 +208,42 @@ func (a *App) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = a.server.Shutdown(shutdownCtx)
-		_ = a.db.Close()
-		if a.workers != nil {
-			a.workers.Wait()
-		}
+		a.shutdown()
 		return ctx.Err()
+	case <-a.restartCh:
+		a.shutdown()
+		return ErrRestartRequested
 	case err := <-errCh:
-		_ = a.db.Close()
-		if a.workers != nil {
-			a.workers.Wait()
-		}
+		a.closeResources()
 		return err
+	}
+}
+
+func resolveConfigPath() string {
+	if path := os.Getenv("FETCH_CONFIG"); path != "" {
+		return path
+	}
+	return "configs/config.yaml"
+}
+
+func (a *App) requestRestart() {
+	select {
+	case a.restartCh <- struct{}{}:
+	default:
+	}
+}
+
+func (a *App) shutdown() {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = a.server.Shutdown(shutdownCtx)
+	a.closeResources()
+}
+
+func (a *App) closeResources() {
+	_ = a.db.Close()
+	if a.workers != nil {
+		a.workers.Wait()
 	}
 }
 

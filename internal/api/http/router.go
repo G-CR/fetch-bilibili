@@ -32,7 +32,23 @@ type DashboardService interface {
 	GetStorageStats(ctx context.Context) (dashboard.StorageStats, error)
 }
 
-func NewRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService) http.Handler {
+type ConfigDocument struct {
+	Path    string
+	Content string
+}
+
+type ConfigSaveResult struct {
+	Changed          bool
+	RestartScheduled bool
+	Path             string
+}
+
+type ConfigService interface {
+	Load(ctx context.Context) (ConfigDocument, error)
+	Save(ctx context.Context, content string) (ConfigSaveResult, error)
+}
+
+func NewRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService, configSvc ConfigService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -49,6 +65,7 @@ func NewRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc Dashbo
 	mux.Handle("/videos", newVideoHandler(dashboardSvc))
 	mux.Handle("/videos/", newVideoItemHandler(jobSvc, dashboardSvc))
 	mux.Handle("/system/status", newSystemStatusHandler(dashboardSvc))
+	mux.Handle("/system/config", newSystemConfigHandler(configSvc))
 	mux.Handle("/storage/stats", newStorageStatsHandler(dashboardSvc))
 	mux.Handle("/storage/cleanup", newStorageCleanupHandler(jobSvc))
 

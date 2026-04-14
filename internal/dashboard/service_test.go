@@ -157,7 +157,7 @@ func TestServiceSystemStatus(t *testing.T) {
 		stubAuthChecker{
 			info: bilibili.AuthInfo{IsLogin: true, Mid: 1, Uname: "tester"},
 			runtime: bilibili.RuntimeStatus{
-				CookieSource:     "cookie_file",
+				CookieSource:     "config",
 				LastCheckResult:  "valid",
 				LastReloadResult: "success",
 				LastCheckAt:      time.Now().Add(-time.Minute),
@@ -180,7 +180,7 @@ func TestServiceSystemStatus(t *testing.T) {
 	if status.Cookie.Status != "valid" || !status.Cookie.IsLogin {
 		t.Fatalf("unexpected cookie status: %+v", status.Cookie)
 	}
-	if status.Cookie.Source != "cookie_file" {
+	if status.Cookie.Source != "config" {
 		t.Fatalf("unexpected cookie source: %+v", status.Cookie)
 	}
 	if status.Cookie.LastCheckResult != "valid" || status.Cookie.LastReloadResult != "success" {
