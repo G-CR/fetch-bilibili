@@ -13,6 +13,7 @@ type CreatorService interface {
 	Upsert(ctx context.Context, entry creator.Entry) (repo.Creator, error)
 	ListActive(ctx context.Context, limit int) ([]repo.Creator, error)
 	Patch(ctx context.Context, id int64, patch creator.Patch) (repo.Creator, error)
+	Delete(ctx context.Context, id int64) error
 }
 
 type JobService interface {

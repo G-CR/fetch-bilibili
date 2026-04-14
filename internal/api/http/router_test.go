@@ -18,13 +18,14 @@ import (
 )
 
 type stubCreatorService struct {
-	last    creator.Entry
-	result  repo.Creator
-	err     error
-	list    []repo.Creator
-	listErr error
-	patchID int64
-	patch   creator.Patch
+	last     creator.Entry
+	result   repo.Creator
+	err      error
+	list     []repo.Creator
+	listErr  error
+	patchID  int64
+	patch    creator.Patch
+	deleteID int64
 }
 
 func (s *stubCreatorService) Upsert(ctx context.Context, entry creator.Entry) (repo.Creator, error) {
@@ -56,6 +57,11 @@ func (s *stubCreatorService) Patch(ctx context.Context, id int64, patch creator.
 		s.result = repo.Creator{ID: id}
 	}
 	return s.result, nil
+}
+
+func (s *stubCreatorService) Delete(ctx context.Context, id int64) error {
+	s.deleteID = id
+	return s.err
 }
 
 type stubJobService struct {
@@ -599,6 +605,45 @@ func TestPatchCreatorMethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestDeleteCreator(t *testing.T) {
+	service := &stubCreatorService{}
+	r := newTestRouter(service, nil, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/creators/7", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
+	}
+	if service.deleteID != 7 {
+		t.Fatalf("expected delete id 7, got %d", service.deleteID)
+	}
+}
+
+func TestDeleteCreatorNotFound(t *testing.T) {
+	service := &stubCreatorService{err: repo.ErrNotFound}
+	r := newTestRouter(service, nil, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/creators/7", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestDeleteCreatorConflict(t *testing.T) {
+	service := &stubCreatorService{err: repo.ErrConflict}
+	r := newTestRouter(service, nil, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/creators/7", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", w.Code)
 	}
 }
 

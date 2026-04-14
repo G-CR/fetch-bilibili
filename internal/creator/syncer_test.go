@@ -116,6 +116,32 @@ func TestFileSyncerMissingFile(t *testing.T) {
 	syncer.syncOnce(context.Background(), true)
 }
 
+func TestFileSyncerSkipsRemovedCreator(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "creators.yaml")
+	content := `
+creators:
+  - uid: "123"
+    name: "should-skip"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	repoStub := &stubRepo{
+		creators: map[int64]repo.Creator{
+			1: {ID: 1, UID: "123", Name: "removed", Status: "removed", Platform: "bilibili"},
+		},
+	}
+	svc := NewService(repoStub, nil, nil)
+	syncer := NewFileSyncer(svc, path, 0, nil)
+
+	syncer.syncOnce(context.Background(), true)
+	if repoStub.count != 0 {
+		t.Fatalf("expected removed creator not re-upserted, got count=%d", repoStub.count)
+	}
+}
+
 func TestFileSyncerStartNoFile(t *testing.T) {
 	repoStub := &stubRepo{}
 	svc := NewService(repoStub, nil, nil)

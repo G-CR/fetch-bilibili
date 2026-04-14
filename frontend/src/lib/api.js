@@ -40,6 +40,12 @@ export async function createCreator(baseURL, creator) {
   });
 }
 
+export async function deleteCreator(baseURL, id) {
+  return request(baseURL, `/creators/${id}`, {
+    method: "DELETE"
+  });
+}
+
 export async function enqueueJob(baseURL, type) {
   return request(baseURL, "/jobs", {
     method: "POST",

@@ -100,6 +100,27 @@ ready
 }
 ```
 
+### 2.4 `DELETE /creators/{id}`
+- 用途：手工移除单个博主
+- 说明：
+  - 该接口会将博主标记为 `removed`，不会直接物理删除归档数据。
+  - 被手工移除的博主不会再被 `creators.file` 自动同步恢复。
+  - 如需恢复，可再次调用 `POST /creators` 添加相同 UID。
+
+- 成功响应：
+
+```text
+204 No Content
+```
+
+- 失败响应示例：
+
+```json
+{
+  "error": "博主不存在"
+}
+```
+
 ## 3. 任务
 
 ### 3.1 `POST /jobs`

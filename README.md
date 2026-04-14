@@ -6,7 +6,7 @@
 - 博主列表文件（YAML/JSON）动态加载与定期刷新
 - 文件中移除的博主自动停用（status=paused）
 - HTTP 接口添加博主（POST /creators）
-- HTTP 运维接口：博主停用/恢复、单视频查询、单视频重下、单视频检查、手动 cleanup
+- HTTP 运维接口：博主停用/恢复/移除、单视频查询、单视频重下、单视频检查、手动 cleanup
 - B 站真实 API 接入（WBI 签名、可用性检查、名称解析）
 - Cookie/SESSDATA 支持 + 自动刷新/有效性检查
 - 调度器 + 工作池
@@ -158,6 +158,8 @@ creators:
 说明：
 - 支持 YAML/JSON
 - 文件移除的博主会被自动停用（status=paused）
+- 如果通过 HTTP `DELETE /creators/{id}` 手工移除博主，服务会将其标记为 `removed`，后续文件同步不会自动恢复。
+- 如需恢复已手工移除的博主，可再次通过 `POST /creators` 添加相同 UID。
 
 ## HTTP API
 ### 添加博主

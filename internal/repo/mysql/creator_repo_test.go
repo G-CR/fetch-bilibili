@@ -3,6 +3,7 @@ package mysqlrepo
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"regexp"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"fetch-bilibili/internal/repo"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	gomysql "github.com/go-sql-driver/mysql"
 )
 
 func TestCreatorCreate(t *testing.T) {
@@ -153,6 +155,37 @@ func TestCreatorFindByID(t *testing.T) {
 	}
 	if c.UID != "123" || c.Name != "name" {
 		t.Fatalf("unexpected creator data")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestCreatorFindByPlatformUID(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	created := time.Now().Add(-time.Hour)
+	updated := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "platform", "uid", "name", "follower_count", "status", "created_at", "updated_at"}).
+		AddRow(1, "bilibili", "123", "name", 5, "removed", created, updated)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, platform, uid, name, follower_count, status, created_at, updated_at FROM creators WHERE platform = ? AND uid = ?")).
+		WithArgs("bilibili", "123").
+		WillReturnRows(rows)
+
+	c, err := repoImpl.Creators().FindByPlatformUID(context.Background(), "bilibili", "123")
+	if err != nil {
+		t.Fatalf("find error: %v", err)
+	}
+	if c.UID != "123" || c.Status != "removed" {
+		t.Fatalf("unexpected creator data: %+v", c)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -312,6 +345,54 @@ func TestCreatorCountActive(t *testing.T) {
 	}
 	if count != 3 {
 		t.Fatalf("expected count 3, got %d", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestCreatorDeleteByID(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM creators WHERE id = ?")).
+		WithArgs(int64(2)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	deleted, err := repoImpl.Creators().DeleteByID(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("delete error: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected deleted 1, got %d", deleted)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestCreatorDeleteByIDConflict(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM creators WHERE id = ?")).
+		WithArgs(int64(2)).
+		WillReturnError(&gomysql.MySQLError{Number: 1451, Message: "Cannot delete or update a parent row"})
+
+	if _, err := repoImpl.Creators().DeleteByID(context.Background(), 2); !errors.Is(err, repo.ErrConflict) {
+		t.Fatalf("expected conflict, got %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

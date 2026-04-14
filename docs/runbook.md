@@ -31,6 +31,7 @@ configs/config.example.yaml -> configs/config.yaml
 - `scheduler.check_interval`（默认 24h）
 - `creators.file`（博主列表文件路径，可用 `configs/creators.example.yaml` 参考）
 - 从文件移除的博主会被自动停用（`status=paused`）。
+- 如通过 `DELETE /creators/{id}` 手工移除博主，服务会标记为 `removed`，后续文件同步不会自动恢复。
 
 ## 5. 启动服务（示例）
 ```bash

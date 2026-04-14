@@ -112,6 +112,8 @@ creators:
 ```
 - 文件只负责新增/更新，不会自动删除数据库已有博主。
 - 从文件中移除的博主会被自动停用（status=paused）。
+- 如果某个博主已通过 HTTP 删除接口被手工移除（status=removed），文件同步不会将其自动恢复。
+- 如需恢复已手工移除的博主，请再次通过 `POST /creators` 添加相同 UID。
 
 ### 3.6 bilibili
 - `resolve_name_cache_ttl`：名称解析为 UID 的缓存时间。

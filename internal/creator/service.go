@@ -2,6 +2,7 @@ package creator
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -15,6 +16,7 @@ type Resolver interface {
 }
 
 var ErrInvalidPatch = errors.New("博主 patch 参数无效")
+var ErrInvalidDelete = errors.New("博主 delete 参数无效")
 
 type Patch struct {
 	Name   *string
@@ -39,6 +41,20 @@ func NewService(repo repo.CreatorRepository, resolver Resolver, logger *log.Logg
 }
 
 func (s *Service) Upsert(ctx context.Context, entry Entry) (repo.Creator, error) {
+	creator, err := s.prepareCreator(ctx, entry)
+	if err != nil {
+		return repo.Creator{}, err
+	}
+
+	id, err := s.repo.Upsert(ctx, creator)
+	if err != nil {
+		return repo.Creator{}, err
+	}
+	creator.ID = id
+	return creator, nil
+}
+
+func (s *Service) prepareCreator(ctx context.Context, entry Entry) (repo.Creator, error) {
 	if s.repo == nil {
 		return repo.Creator{}, errors.New("博主服务未初始化")
 	}
@@ -73,18 +89,12 @@ func (s *Service) Upsert(ctx context.Context, entry Entry) (repo.Creator, error)
 		s.logger.Printf("名称解析成功 name=%s uid=%s", entry.Name, uid)
 	}
 
-	creator := repo.Creator{
+	return repo.Creator{
 		Platform: platform,
 		UID:      uid,
 		Name:     name,
 		Status:   status,
-	}
-	id, err := s.repo.Upsert(ctx, creator)
-	if err != nil {
-		return repo.Creator{}, err
-	}
-	creator.ID = id
-	return creator, nil
+	}, nil
 }
 
 func (s *Service) ListActive(ctx context.Context, limit int) ([]repo.Creator, error) {
@@ -129,4 +139,49 @@ func (s *Service) Patch(ctx context.Context, id int64, patch Patch) (repo.Creato
 		return repo.Creator{}, err
 	}
 	return current, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if s.repo == nil {
+		return errors.New("博主服务未初始化")
+	}
+	if id <= 0 {
+		return fmt.Errorf("%w: id 必须大于 0", ErrInvalidDelete)
+	}
+
+	current, err := s.repo.FindByID(ctx, id)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return repo.ErrNotFound
+	case err != nil:
+		return err
+	}
+	if current.Status == "removed" {
+		return nil
+	}
+	return s.repo.UpdateStatus(ctx, id, "removed")
+}
+
+func (s *Service) upsertFromFile(ctx context.Context, entry Entry) (repo.Creator, bool, error) {
+	creator, err := s.prepareCreator(ctx, entry)
+	if err != nil {
+		return repo.Creator{}, false, err
+	}
+
+	current, err := s.repo.FindByPlatformUID(ctx, creator.Platform, creator.UID)
+	switch {
+	case err == nil && current.Status == "removed":
+		return current, true, nil
+	case err == nil:
+	case errors.Is(err, sql.ErrNoRows):
+	default:
+		return repo.Creator{}, false, err
+	}
+
+	id, err := s.repo.Upsert(ctx, creator)
+	if err != nil {
+		return repo.Creator{}, false, err
+	}
+	creator.ID = id
+	return creator, false, nil
 }

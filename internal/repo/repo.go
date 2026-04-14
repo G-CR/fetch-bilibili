@@ -10,7 +10,9 @@ type CreatorRepository interface {
 	Create(ctx context.Context, c Creator) (int64, error)
 	Update(ctx context.Context, c Creator) error
 	UpdateStatus(ctx context.Context, id int64, status string) error
+	DeleteByID(ctx context.Context, id int64) (int64, error)
 	FindByID(ctx context.Context, id int64) (Creator, error)
+	FindByPlatformUID(ctx context.Context, platform, uid string) (Creator, error)
 	ListActive(ctx context.Context, limit int) ([]Creator, error)
 	ListActiveAfter(ctx context.Context, lastID int64, limit int) ([]Creator, error)
 	CountActive(ctx context.Context) (int64, error)

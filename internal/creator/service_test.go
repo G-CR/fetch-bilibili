@@ -2,6 +2,7 @@ package creator
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 
@@ -12,6 +13,8 @@ type stubRepo struct {
 	last      repo.Creator
 	updated   repo.Creator
 	id        int64
+	deletedID int64
+	deleted   int64
 	err       error
 	count     int
 	list      []repo.Creator
@@ -61,7 +64,20 @@ func (s *stubRepo) FindByID(ctx context.Context, id int64) (repo.Creator, error)
 	if c, ok := s.creators[id]; ok {
 		return c, nil
 	}
-	return repo.Creator{}, repo.ErrNotImplemented
+	return repo.Creator{}, sql.ErrNoRows
+}
+
+func (s *stubRepo) FindByPlatformUID(ctx context.Context, platform, uid string) (repo.Creator, error) {
+	for _, c := range s.creators {
+		matchPlatform := c.Platform
+		if matchPlatform == "" {
+			matchPlatform = "bilibili"
+		}
+		if matchPlatform == platform && c.UID == uid {
+			return c, nil
+		}
+	}
+	return repo.Creator{}, sql.ErrNoRows
 }
 
 func (s *stubRepo) ListActive(ctx context.Context, limit int) ([]repo.Creator, error) {
@@ -102,6 +118,14 @@ func (s *stubRepo) CountActive(ctx context.Context) (int64, error) {
 		}
 	}
 	return count, nil
+}
+
+func (s *stubRepo) DeleteByID(ctx context.Context, id int64) (int64, error) {
+	s.deletedID = id
+	if s.err != nil {
+		return 0, s.err
+	}
+	return s.deleted, nil
 }
 
 type stubResolver struct {
@@ -274,5 +298,50 @@ func TestServiceListActiveRepoError(t *testing.T) {
 	svc := NewService(repoStub, nil, nil)
 	if _, err := svc.ListActive(context.Background(), 10); err == nil {
 		t.Fatalf("expected error")
+	}
+}
+
+func TestServiceDelete(t *testing.T) {
+	repoStub := &stubRepo{
+		creators: map[int64]repo.Creator{
+			7: {ID: 7, UID: "777", Name: "old", Status: "active", Platform: "bilibili"},
+		},
+	}
+	svc := NewService(repoStub, nil, nil)
+
+	if err := svc.Delete(context.Background(), 7); err != nil {
+		t.Fatalf("delete error: %v", err)
+	}
+	if repoStub.statuses[7] != "removed" {
+		t.Fatalf("expected status removed, got %+v", repoStub.statuses)
+	}
+}
+
+func TestServiceDeleteNotFound(t *testing.T) {
+	repoStub := &stubRepo{}
+	svc := NewService(repoStub, nil, nil)
+
+	if err := svc.Delete(context.Background(), 7); !errors.Is(err, repo.ErrNotFound) {
+		t.Fatalf("expected not found, got %v", err)
+	}
+}
+
+func TestServiceUpsertFromFileSkipsRemovedCreator(t *testing.T) {
+	repoStub := &stubRepo{
+		creators: map[int64]repo.Creator{
+			7: {ID: 7, UID: "777", Name: "old", Status: "removed", Platform: "bilibili"},
+		},
+	}
+	svc := NewService(repoStub, nil, nil)
+
+	creator, skipped, err := svc.upsertFromFile(context.Background(), Entry{UID: "777", Name: "old"})
+	if err != nil {
+		t.Fatalf("upsert from file error: %v", err)
+	}
+	if !skipped {
+		t.Fatalf("expected skipped")
+	}
+	if creator.ID != 7 || repoStub.count != 0 {
+		t.Fatalf("expected removed creator kept untouched, creator=%+v count=%d", creator, repoStub.count)
 	}
 }

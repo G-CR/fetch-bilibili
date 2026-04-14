@@ -34,7 +34,15 @@ func (f *fakeCreators) UpdateStatus(ctx context.Context, id int64, status string
 	return repo.ErrNotImplemented
 }
 
+func (f *fakeCreators) DeleteByID(ctx context.Context, id int64) (int64, error) {
+	return 0, repo.ErrNotImplemented
+}
+
 func (f *fakeCreators) FindByID(ctx context.Context, id int64) (repo.Creator, error) {
+	return repo.Creator{}, repo.ErrNotImplemented
+}
+
+func (f *fakeCreators) FindByPlatformUID(ctx context.Context, platform, uid string) (repo.Creator, error) {
 	return repo.Creator{}, repo.ErrNotImplemented
 }
 

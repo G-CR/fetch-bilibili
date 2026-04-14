@@ -13,7 +13,7 @@ CREATE TABLE creators (
   uid VARCHAR(64) NOT NULL,
   name VARCHAR(255) DEFAULT NULL,
   follower_count BIGINT UNSIGNED DEFAULT 0,
-  status ENUM('active','paused') NOT NULL DEFAULT 'active',
+  status ENUM('active','paused','removed') NOT NULL DEFAULT 'active',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -121,7 +121,12 @@ CREATE TABLE storage_reports (
   - 状态枚举扩展：优先兼容旧状态。
   - 大字段变更：尽量避免在线 ALTER 大表，必要时使用影子表。
 
-## 8. 索引与性能备注
+## 8. 博主状态说明
+- `active`：正常采集与展示。
+- `paused`：已暂停采集，可通过配置文件或接口重新启用。
+- `removed`：手工移除后的保留态，不在活跃列表展示，且不会被文件同步自动恢复。
+
+## 9. 索引与性能备注
 - `videos` 表的 `creator_id + publish_time` 支持按博主时间查询。
 - `videos.state` 用于筛选下载/检查/清理任务。
 - `jobs` 表索引支持任务调度器快速拉取待执行队列。

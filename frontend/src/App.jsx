@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createCreator, enqueueJob, formatRequestError, loadDashboardSnapshot } from "./lib/api";
+import { createCreator, deleteCreator, enqueueJob, formatRequestError, loadDashboardSnapshot } from "./lib/api";
 import {
   applyRemoteSnapshot,
   deriveCleanupPreview,
@@ -297,16 +297,27 @@ function App() {
     pushLog(`切换博主状态: #${id}`);
   }
 
-  function removeCreator(id) {
+  async function removeCreator(id) {
     if (state.mode === "api") {
-      showToast("API 模式下当前列表仅支持只读");
+      setBusyAction(`remove-${id}`);
+      try {
+        await deleteCreator(state.apiBase, id);
+        await refreshAfterMutation(`已通过 API 停止追踪博主: #${id}`);
+        showToast("已停止追踪");
+      } catch (error) {
+        const message = formatRequestError(error);
+        pushLog(`停止追踪失败: ${message}`);
+        showToast(message);
+      } finally {
+        setBusyAction("");
+      }
       return;
     }
     updateState((previous) => ({
       ...previous,
       creators: previous.creators.filter((creator) => creator.id !== id)
     }));
-    pushLog(`移除本地博主: #${id}`);
+    pushLog(`停止追踪本地博主: #${id}`);
   }
 
   const storagePercent = `${metrics.storagePercent}%`;
@@ -538,7 +549,7 @@ function App() {
                       {creator.status === "active" ? "暂停" : "启用"}
                     </button>
                     <button type="button" className="ghost-link" onClick={() => removeCreator(creator.id)}>
-                      移除
+                      停止追踪
                     </button>
                   </span>
                 </div>

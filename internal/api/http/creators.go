@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"fetch-bilibili/internal/creator"
+	"fetch-bilibili/internal/repo"
 )
 
 type creatorHandler struct {
@@ -129,7 +130,7 @@ func (h *creatorHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 func newCreatorItemHandler(service CreatorService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch {
+		if r.Method != http.MethodPatch && r.Method != http.MethodDelete {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
@@ -141,6 +142,24 @@ func newCreatorItemHandler(service CreatorService) http.Handler {
 		id, tail, err := parsePathID(r.URL.Path, "/creators/")
 		if err != nil || tail != "" {
 			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "博主 ID 无效"})
+			return
+		}
+
+		if r.Method == http.MethodDelete {
+			if err := service.Delete(r.Context(), id); err != nil {
+				switch {
+				case errors.Is(err, creator.ErrInvalidDelete):
+					writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
+				case errors.Is(err, sql.ErrNoRows), errors.Is(err, repo.ErrNotFound):
+					writeJSON(w, http.StatusNotFound, errorResponse{Error: "博主不存在"})
+				case errors.Is(err, repo.ErrConflict):
+					writeJSON(w, http.StatusConflict, errorResponse{Error: "博主存在关联视频，暂不支持直接删除"})
+				default:
+					writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+				}
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 

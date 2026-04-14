@@ -80,12 +80,18 @@ func (s *FileSyncer) syncOnce(ctx context.Context, force bool) {
 
 	success := 0
 	failed := 0
+	skipped := 0
 	activeIDs := make(map[int64]struct{}, len(entries))
 	for _, entry := range entries {
-		created, err := s.service.Upsert(ctx, entry)
+		created, removed, err := s.service.upsertFromFile(ctx, entry)
 		if err != nil {
 			s.logger.Printf("同步博主失败 uid=%s name=%s: %v", entry.UID, entry.Name, err)
 			failed++
+			continue
+		}
+		if removed {
+			s.logger.Printf("跳过已移除博主 uid=%s name=%s", created.UID, created.Name)
+			skipped++
 			continue
 		}
 		if created.ID > 0 {
@@ -96,7 +102,7 @@ func (s *FileSyncer) syncOnce(ctx context.Context, force bool) {
 
 	s.lastModTime = info.ModTime()
 	s.lastSize = info.Size()
-	s.logger.Printf("同步博主完成: 成功=%d 失败=%d", success, failed)
+	s.logger.Printf("同步博主完成: 成功=%d 跳过=%d 失败=%d", success, skipped, failed)
 
 	s.pauseMissing(ctx, activeIDs)
 }

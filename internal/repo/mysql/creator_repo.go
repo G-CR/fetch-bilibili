@@ -3,9 +3,11 @@ package mysqlrepo
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"fetch-bilibili/internal/repo"
+	gomysql "github.com/go-sql-driver/mysql"
 )
 
 func (r *creatorRepo) Upsert(ctx context.Context, c repo.Creator) (int64, error) {
@@ -83,12 +85,54 @@ func (r *creatorRepo) UpdateStatus(ctx context.Context, id int64, status string)
 	return err
 }
 
+func (r *creatorRepo) DeleteByID(ctx context.Context, id int64) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM creators WHERE id = ?`, id)
+	if err != nil {
+		var mysqlErr *gomysql.MySQLError
+		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1451 {
+			return 0, repo.ErrConflict
+		}
+		return 0, err
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
+}
+
 func (r *creatorRepo) FindByID(ctx context.Context, id int64) (repo.Creator, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, platform, uid, name, follower_count, status, created_at, updated_at
 		FROM creators
 		WHERE id = ?
 	`, id)
+
+	var c repo.Creator
+	var name sql.NullString
+	var createdAt, updatedAt time.Time
+	if err := row.Scan(&c.ID, &c.Platform, &c.UID, &name, &c.FollowerCount, &c.Status, &createdAt, &updatedAt); err != nil {
+		return repo.Creator{}, err
+	}
+	if name.Valid {
+		c.Name = name.String
+	}
+	c.CreatedAt = createdAt
+	c.UpdatedAt = updatedAt
+	return c, nil
+}
+
+func (r *creatorRepo) FindByPlatformUID(ctx context.Context, platform, uid string) (repo.Creator, error) {
+	if platform == "" {
+		platform = "bilibili"
+	}
+
+	row := r.db.QueryRowContext(ctx, `
+		SELECT id, platform, uid, name, follower_count, status, created_at, updated_at
+		FROM creators
+		WHERE platform = ? AND uid = ?
+	`, platform, uid)
 
 	var c repo.Creator
 	var name sql.NullString

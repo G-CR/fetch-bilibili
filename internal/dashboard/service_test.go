@@ -25,7 +25,11 @@ func (s stubCreatorRepo) Upsert(context.Context, repo.Creator) (int64, error) { 
 func (s stubCreatorRepo) Create(context.Context, repo.Creator) (int64, error) { return 0, nil }
 func (s stubCreatorRepo) Update(context.Context, repo.Creator) error          { return nil }
 func (s stubCreatorRepo) UpdateStatus(context.Context, int64, string) error   { return nil }
+func (s stubCreatorRepo) DeleteByID(context.Context, int64) (int64, error)    { return 0, nil }
 func (s stubCreatorRepo) FindByID(context.Context, int64) (repo.Creator, error) {
+	return repo.Creator{}, nil
+}
+func (s stubCreatorRepo) FindByPlatformUID(context.Context, string, string) (repo.Creator, error) {
 	return repo.Creator{}, nil
 }
 func (s stubCreatorRepo) ListActive(context.Context, int) ([]repo.Creator, error) { return nil, nil }

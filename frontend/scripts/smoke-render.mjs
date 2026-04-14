@@ -36,6 +36,9 @@ try {
   if (!html.includes("失败原因")) {
     throw new Error("前端未渲染失败原因区域");
   }
+  if (!html.includes("停止追踪")) {
+    throw new Error("前端未渲染停止追踪操作文案");
+  }
 
   console.log("smoke render ok");
 } finally {
