@@ -14,6 +14,7 @@ import (
 	"fetch-bilibili/internal/config"
 	"fetch-bilibili/internal/creator"
 	"fetch-bilibili/internal/dashboard"
+	"fetch-bilibili/internal/jobs"
 	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/platform/bilibili"
 	"fetch-bilibili/internal/repo"
@@ -112,7 +113,7 @@ func TestNewSuccess(t *testing.T) {
 	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
-	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration) workerRunner {
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
 		return &stubWorker{}
 	}
 	dashboardSvc := &stubHTTPDashboardService{}
@@ -221,7 +222,7 @@ func TestNewInjectsLiveBrokerIntoRouter(t *testing.T) {
 	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
-	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration) workerRunner {
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
 		return &stubWorker{}
 	}
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
@@ -255,6 +256,79 @@ func TestNewInjectsLiveBrokerIntoRouter(t *testing.T) {
 	}
 	if gotBroker != app.broker {
 		t.Fatal("expected router to receive the app-owned broker")
+	}
+}
+
+func TestNewInjectsLiveBrokerIntoTaskChain(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	origMySQL := newMySQL
+	origScheduler := newScheduler
+	origWorker := newWorker
+	origRouter := newRouter
+	origDashboardService := newDashboardService
+	origRunMySQLMigrations := runMySQLMigrations
+	origNewJobService := newJobService
+	defer func() {
+		newMySQL = origMySQL
+		newScheduler = origScheduler
+		newWorker = origWorker
+		newRouter = origRouter
+		newDashboardService = origDashboardService
+		runMySQLMigrations = origRunMySQLMigrations
+		newJobService = origNewJobService
+	}()
+
+	var gotJobServiceBroker *live.Broker
+	var gotWorkerBroker *live.Broker
+	var gotRouterBroker *live.Broker
+
+	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
+		return db, nil
+	}
+	newJobService = func(repo repo.JobRepository, broker *live.Broker) *jobs.Service {
+		gotJobServiceBroker = broker
+		return jobs.NewService(repo, nil)
+	}
+	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+		return &stubScheduler{}, nil
+	}
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
+		gotWorkerBroker = broker
+		return &stubWorker{}
+	}
+	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
+		return &stubHTTPDashboardService{}
+	}
+	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
+		return nil
+	}
+	newRouter = func(_ httpapi.CreatorService, _ httpapi.JobService, _ httpapi.DashboardService, _ httpapi.ConfigService, broker *live.Broker) http.Handler {
+		gotRouterBroker = broker
+		return http.NewServeMux()
+	}
+
+	cfg := config.Default()
+	cfg.Storage.RootDir = "/tmp"
+	cfg.MySQL.DSN = "dsn"
+	cfg.Server.Addr = "127.0.0.1:0"
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+	if app.broker == nil {
+		t.Fatal("expected app to own broker")
+	}
+	if gotJobServiceBroker == nil || gotWorkerBroker == nil || gotRouterBroker == nil {
+		t.Fatalf("expected broker injected to jobs/worker/router, got jobs=%v worker=%v router=%v", gotJobServiceBroker, gotWorkerBroker, gotRouterBroker)
+	}
+	if gotJobServiceBroker != app.broker || gotWorkerBroker != app.broker || gotRouterBroker != app.broker {
+		t.Fatal("expected jobs/worker/router to share app-owned broker")
 	}
 }
 
@@ -306,7 +380,7 @@ func TestRunCanceled(t *testing.T) {
 	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return schedulerStub, nil
 	}
-	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration) workerRunner {
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
 		return workerStub
 	}
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
@@ -435,7 +509,7 @@ func TestRunStartsCreatorSyncer(t *testing.T) {
 	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
-	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration) workerRunner {
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
 		return &stubWorker{}
 	}
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
@@ -513,7 +587,7 @@ func TestNewRunsMySQLMigrationsWhenEnabled(t *testing.T) {
 	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
-	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration) workerRunner {
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
 		return &stubWorker{}
 	}
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
@@ -570,7 +644,7 @@ func TestNewSkipsMySQLMigrationsWhenDisabled(t *testing.T) {
 	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
-	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration) workerRunner {
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
 		return &stubWorker{}
 	}
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
@@ -631,7 +705,7 @@ func TestNewCreatesAuthWatcherWhenCookieConfigured(t *testing.T) {
 	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
-	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration) workerRunner {
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
 		return &stubWorker{}
 	}
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {

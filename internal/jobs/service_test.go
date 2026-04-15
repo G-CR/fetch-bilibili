@@ -4,18 +4,25 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/repo"
 )
 
 type stubJobRepo struct {
-	last repo.Job
-	err  error
+	last      repo.Job
+	err       error
+	enqueueID int64
 }
 
 func (s *stubJobRepo) Enqueue(ctx context.Context, job repo.Job) (int64, error) {
 	s.last = job
-	return 1, s.err
+	id := s.enqueueID
+	if id == 0 {
+		id = 1
+	}
+	return id, s.err
 }
 
 func (s *stubJobRepo) FetchQueued(ctx context.Context, limit int) ([]repo.Job, error) {
@@ -34,9 +41,17 @@ func (s *stubJobRepo) CountByStatuses(ctx context.Context, statuses []string) (i
 	return 0, nil
 }
 
+type stubEventPublisher struct {
+	events []live.Event
+}
+
+func (s *stubEventPublisher) Publish(evt live.Event) {
+	s.events = append(s.events, evt)
+}
+
 func TestEnqueueFetch(t *testing.T) {
 	repo := &stubJobRepo{}
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 	if err := svc.EnqueueFetch(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,7 +65,7 @@ func TestEnqueueFetch(t *testing.T) {
 
 func TestEnqueueCleanup(t *testing.T) {
 	repo := &stubJobRepo{}
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 	if err := svc.EnqueueCleanup(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +76,7 @@ func TestEnqueueCleanup(t *testing.T) {
 
 func TestEnqueueCheck(t *testing.T) {
 	repo := &stubJobRepo{}
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 	if err := svc.EnqueueCheck(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,7 +87,7 @@ func TestEnqueueCheck(t *testing.T) {
 
 func TestEnqueueError(t *testing.T) {
 	repo := &stubJobRepo{err: errors.New("fail")}
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 	if err := svc.EnqueueCheck(context.Background()); err == nil {
 		t.Fatalf("expected error")
 	}
@@ -80,7 +95,7 @@ func TestEnqueueError(t *testing.T) {
 
 func TestEnqueueCheckIgnoresDuplicate(t *testing.T) {
 	repo := &stubJobRepo{err: ErrJobAlreadyActive}
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 	if err := svc.EnqueueCheck(context.Background()); err != nil {
 		t.Fatalf("expected duplicate to be ignored, got %v", err)
 	}
@@ -88,7 +103,7 @@ func TestEnqueueCheckIgnoresDuplicate(t *testing.T) {
 
 func TestEnqueueDownload(t *testing.T) {
 	repo := &stubJobRepo{}
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 	if err := svc.EnqueueDownload(context.Background(), 9); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,11 +114,125 @@ func TestEnqueueDownload(t *testing.T) {
 
 func TestEnqueueCheckVideo(t *testing.T) {
 	repo := &stubJobRepo{}
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 	if err := svc.EnqueueCheckVideo(context.Background(), 10); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if repo.last.Type != TypeCheck || repo.last.Payload["video_id"] != int64(10) {
 		t.Fatalf("unexpected job: %+v", repo.last)
+	}
+}
+
+func TestEnqueueMethodsPublishesEvent(t *testing.T) {
+	testCases := []struct {
+		name          string
+		run           func(*Service) error
+		wantType      string
+		wantPayload   map[string]any
+		wantEnqueueID int64
+	}{
+		{
+			name: "fetch",
+			run: func(svc *Service) error {
+				return svc.EnqueueFetch(context.Background())
+			},
+			wantType:      TypeFetch,
+			wantEnqueueID: 11,
+		},
+		{
+			name: "check",
+			run: func(svc *Service) error {
+				return svc.EnqueueCheck(context.Background())
+			},
+			wantType:      TypeCheck,
+			wantEnqueueID: 12,
+		},
+		{
+			name: "cleanup",
+			run: func(svc *Service) error {
+				return svc.EnqueueCleanup(context.Background())
+			},
+			wantType:      TypeCleanup,
+			wantEnqueueID: 13,
+		},
+		{
+			name: "download",
+			run: func(svc *Service) error {
+				return svc.EnqueueDownload(context.Background(), 88)
+			},
+			wantType:      TypeDownload,
+			wantPayload:   map[string]any{"video_id": int64(88)},
+			wantEnqueueID: 14,
+		},
+		{
+			name: "check video",
+			run: func(svc *Service) error {
+				return svc.EnqueueCheckVideo(context.Background(), 99)
+			},
+			wantType:      TypeCheck,
+			wantPayload:   map[string]any{"video_id": int64(99)},
+			wantEnqueueID: 15,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &stubJobRepo{enqueueID: tc.wantEnqueueID}
+			publisher := &stubEventPublisher{}
+			svc := NewService(repo, publisher)
+
+			if err := tc.run(svc); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(publisher.events) != 1 {
+				t.Fatalf("expected one event, got %d", len(publisher.events))
+			}
+
+			evt := publisher.events[0]
+			if evt.Type != "job.changed" {
+				t.Fatalf("expected type job.changed, got %s", evt.Type)
+			}
+			payload, ok := evt.Payload.(map[string]any)
+			if !ok {
+				t.Fatalf("expected map payload, got %T", evt.Payload)
+			}
+			if payload["id"] != tc.wantEnqueueID {
+				t.Fatalf("expected id %d, got %#v", tc.wantEnqueueID, payload["id"])
+			}
+			if payload["type"] != tc.wantType {
+				t.Fatalf("expected type %s, got %#v", tc.wantType, payload["type"])
+			}
+			if payload["status"] != StatusQueued {
+				t.Fatalf("expected status queued, got %#v", payload["status"])
+			}
+			if gotPayload, ok := payload["payload"].(map[string]any); len(tc.wantPayload) == 0 {
+				if ok && len(gotPayload) > 0 {
+					t.Fatalf("expected empty payload, got %#v", gotPayload)
+				}
+			} else {
+				if !ok {
+					t.Fatalf("expected map payload field, got %T", payload["payload"])
+				}
+				if gotPayload["video_id"] != tc.wantPayload["video_id"] {
+					t.Fatalf("expected video_id %#v, got %#v", tc.wantPayload["video_id"], gotPayload["video_id"])
+				}
+			}
+			if _, ok := payload["updated_at"].(time.Time); !ok {
+				t.Fatalf("expected updated_at time.Time, got %T", payload["updated_at"])
+			}
+		})
+	}
+}
+
+func TestEnqueueDuplicatePublishesEventOnlyOnSuccess(t *testing.T) {
+	repo := &stubJobRepo{err: ErrJobAlreadyActive}
+	publisher := &stubEventPublisher{}
+	svc := NewService(repo, publisher)
+
+	if err := svc.EnqueueCheck(context.Background()); err != nil {
+		t.Fatalf("expected duplicate to be ignored, got %v", err)
+	}
+	if len(publisher.events) != 0 {
+		t.Fatalf("expected no event for duplicate enqueue, got %d", len(publisher.events))
 	}
 }

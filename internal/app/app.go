@@ -48,8 +48,11 @@ var runMySQLMigrations = db.RunMySQLMigrations
 var newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 	return scheduler.New(cfg, jobs, nil)
 }
-var newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration) workerRunner {
-	return worker.New(repo, handler, workers, pollEvery, nil)
+var newJobService = func(jobRepo repo.JobRepository, broker *live.Broker) *jobs.Service {
+	return jobs.NewService(jobRepo, broker)
+}
+var newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
+	return worker.New(repo, handler, workers, pollEvery, nil, broker)
 }
 var newRouter = httpapi.NewRouter
 var newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
@@ -127,7 +130,8 @@ func New(cfg config.Config) (*App, error) {
 		Jobs:       repoImpl.Jobs(),
 	}
 
-	jobService := jobs.NewService(repos.Jobs)
+	broker := live.NewBroker()
+	jobService := newJobService(repos.Jobs, broker)
 	sched, err := newScheduler(cfg.Scheduler, jobService)
 	if err != nil {
 		_ = database.Close()
@@ -150,7 +154,7 @@ func New(cfg config.Config) (*App, error) {
 	)
 	handler.SetStoragePolicy(cfg.Storage.MaxBytes, cfg.Storage.SafeBytes, cfg.Storage.KeepOutOfPrint)
 	handler.SetCleanupRetention(cfg.Storage.CleanupRetentionHours)
-	pool := newWorker(repos.Jobs, handler, cfg.Limits.DownloadConcurrency, 2*time.Second)
+	pool := newWorker(repos.Jobs, handler, cfg.Limits.DownloadConcurrency, 2*time.Second, broker)
 
 	var authWatcher authWatcherRunner
 	if cfg.Bilibili.Cookie != "" || cfg.Bilibili.SESSDATA != "" {
@@ -163,7 +167,6 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	dashboardService := newDashboardService(database, repos.Creators, repos.Videos, repos.Jobs, client, cfg)
-	broker := live.NewBroker()
 	app := &App{
 		cfg:         cfg,
 		db:          database,

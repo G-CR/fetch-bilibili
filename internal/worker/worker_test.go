@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"fetch-bilibili/internal/jobs"
+	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/repo"
 )
 
@@ -65,10 +67,30 @@ func (h *stubHandler) Handle(ctx context.Context, job repo.Job) error {
 	return h.err
 }
 
+type stubEventPublisher struct {
+	events chan live.Event
+}
+
+func (s *stubEventPublisher) Publish(evt live.Event) {
+	s.events <- evt
+}
+
+func waitEvent(t *testing.T, ch <-chan live.Event, timeout time.Duration) live.Event {
+	t.Helper()
+
+	select {
+	case evt := <-ch:
+		return evt
+	case <-time.After(timeout):
+		t.Fatal("timeout waiting for event")
+		return live.Event{}
+	}
+}
+
 func TestWorkerSuccess(t *testing.T) {
 	repo := &stubRepo{job: repo.Job{ID: 1}, updates: make(chan updateRecord, 1)}
 	handler := &stubHandler{}
-	pool := New(repo, handler, 1, 1*time.Millisecond, nil)
+	pool := New(repo, handler, 1, 1*time.Millisecond, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -89,7 +111,7 @@ func TestWorkerSuccess(t *testing.T) {
 func TestWorkerFailure(t *testing.T) {
 	repo := &stubRepo{job: repo.Job{ID: 2}, updates: make(chan updateRecord, 1)}
 	handler := &stubHandler{err: errors.New("boom")}
-	pool := New(repo, handler, 1, 1*time.Millisecond, nil)
+	pool := New(repo, handler, 1, 1*time.Millisecond, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -110,7 +132,7 @@ func TestWorkerFailure(t *testing.T) {
 func TestWorkerFetchError(t *testing.T) {
 	repo := &stubRepo{fetchErr: errors.New("fetch error")}
 	handler := &stubHandler{}
-	pool := New(repo, handler, 1, 1*time.Millisecond, nil)
+	pool := New(repo, handler, 1, 1*time.Millisecond, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -121,7 +143,7 @@ func TestWorkerFetchError(t *testing.T) {
 func TestWorkerUpdateStatusError(t *testing.T) {
 	repo := &stubRepo{job: repo.Job{ID: 3}, updateErr: errors.New("update error")}
 	handler := &stubHandler{}
-	pool := New(repo, handler, 1, 1*time.Millisecond, nil)
+	pool := New(repo, handler, 1, 1*time.Millisecond, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
@@ -132,8 +154,77 @@ func TestWorkerUpdateStatusError(t *testing.T) {
 func TestWorkerDefaults(t *testing.T) {
 	repo := &stubRepo{}
 	handler := &stubHandler{}
-	pool := New(repo, handler, 0, 0, nil)
+	pool := New(repo, handler, 0, 0, nil, nil)
 	if pool.workers <= 0 {
 		t.Fatalf("expected default workers")
 	}
+}
+
+func TestWorkerSuccessPublishesJobEvent(t *testing.T) {
+	job := repo.Job{
+		ID:      10,
+		Type:    jobs.TypeFetch,
+		Status:  jobs.StatusRunning,
+		Payload: map[string]any{"key": "value"},
+	}
+	repo := &stubRepo{job: job, updates: make(chan updateRecord, 1)}
+	handler := &stubHandler{}
+	publisher := &stubEventPublisher{events: make(chan live.Event, 2)}
+	pool := New(repo, handler, 1, 1*time.Millisecond, nil, publisher)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	running := waitEvent(t, publisher.events, 80*time.Millisecond)
+	success := waitEvent(t, publisher.events, 80*time.Millisecond)
+
+	if payload, ok := running.Payload.(map[string]any); !ok {
+		t.Fatalf("expected running payload map, got %T", running.Payload)
+	} else {
+		if payload["id"] != int64(10) || payload["status"] != jobs.StatusRunning {
+			t.Fatalf("unexpected running payload: %#v", payload)
+		}
+	}
+
+	if payload, ok := success.Payload.(map[string]any); !ok {
+		t.Fatalf("expected success payload map, got %T", success.Payload)
+	} else {
+		if payload["id"] != int64(10) || payload["status"] != jobs.StatusSuccess {
+			t.Fatalf("unexpected success payload: %#v", payload)
+		}
+	}
+
+	pool.Wait()
+}
+
+func TestWorkerFailurePublishesJobEvent(t *testing.T) {
+	job := repo.Job{
+		ID:     20,
+		Type:   jobs.TypeCheck,
+		Status: jobs.StatusRunning,
+	}
+	repo := &stubRepo{job: job, updates: make(chan updateRecord, 1)}
+	handler := &stubHandler{err: errors.New("boom")}
+	publisher := &stubEventPublisher{events: make(chan live.Event, 2)}
+	pool := New(repo, handler, 1, 1*time.Millisecond, nil, publisher)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	_ = waitEvent(t, publisher.events, 80*time.Millisecond)
+	failed := waitEvent(t, publisher.events, 80*time.Millisecond)
+	if payload, ok := failed.Payload.(map[string]any); !ok {
+		t.Fatalf("expected failed payload map, got %T", failed.Payload)
+	} else {
+		if payload["status"] != jobs.StatusFailed {
+			t.Fatalf("expected failed status, got %#v", payload["status"])
+		}
+		if payload["error_msg"] != "boom" {
+			t.Fatalf("expected error_msg boom, got %#v", payload["error_msg"])
+		}
+	}
+
+	pool.Wait()
 }
