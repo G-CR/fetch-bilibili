@@ -62,6 +62,7 @@ func NewRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc Dashbo
 	mux.Handle("/creators", newCreatorHandler(creatorSvc))
 	mux.Handle("/creators/", newCreatorItemHandler(creatorSvc))
 	mux.Handle("/jobs", newJobHandler(jobSvc, dashboardSvc))
+	mux.Handle("/events/stream", newEventsStreamHandler(EventsBroker()))
 	mux.Handle("/videos", newVideoHandler(dashboardSvc))
 	mux.Handle("/videos/", newVideoItemHandler(jobSvc, dashboardSvc))
 	mux.Handle("/system/status", newSystemStatusHandler(dashboardSvc))

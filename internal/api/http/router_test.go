@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -15,6 +16,7 @@ import (
 	"fetch-bilibili/internal/config"
 	"fetch-bilibili/internal/creator"
 	"fetch-bilibili/internal/dashboard"
+	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/repo"
 )
 
@@ -206,6 +208,222 @@ func TestNotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
+}
+
+func TestEventsStreamHeadersHelloAndHeartbeat(t *testing.T) {
+	previousBroker := eventsBroker
+	eventsBroker = live.NewBroker()
+	t.Cleanup(func() {
+		eventsBroker = previousBroker
+	})
+
+	previousHeartbeatInterval := heartbeatInterval
+	heartbeatInterval = 10 * time.Millisecond
+	t.Cleanup(func() {
+		heartbeatInterval = previousHeartbeatInterval
+	})
+
+	r := newTestRouter(nil, nil, nil)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/events/stream", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("expected text/event-stream, got %q", got)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("expected no-cache, got %q", got)
+	}
+	if got := resp.Header.Get("Connection"); got != "keep-alive" {
+		t.Fatalf("expected keep-alive, got %q", got)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	helloMessage := readSSEMessage(t, reader)
+	eventType, data := parseSSEMessage(t, helloMessage)
+	if eventType != "hello" {
+		t.Fatalf("expected hello event, got %q", eventType)
+	}
+
+	var helloPayload map[string]string
+	if err := json.Unmarshal([]byte(data), &helloPayload); err != nil {
+		t.Fatalf("unmarshal hello payload: %v", err)
+	}
+	if helloPayload["server_time"] == "" {
+		t.Fatalf("expected hello payload to include server_time, got %q", data)
+	}
+
+	heartbeatMessage := readSSEMessage(t, reader)
+	eventType, data = parseSSEMessage(t, heartbeatMessage)
+	if eventType != "heartbeat" {
+		t.Fatalf("expected heartbeat event, got %q", eventType)
+	}
+
+	var heartbeatPayload map[string]string
+	if err := json.Unmarshal([]byte(data), &heartbeatPayload); err != nil {
+		t.Fatalf("unmarshal heartbeat payload: %v", err)
+	}
+	if heartbeatPayload["server_time"] == "" {
+		t.Fatalf("expected heartbeat payload to include server_time, got %q", data)
+	}
+}
+
+func TestEventsStreamWritesBrokerPayloadAsJSON(t *testing.T) {
+	previousBroker := eventsBroker
+	eventsBroker = live.NewBroker()
+	t.Cleanup(func() {
+		eventsBroker = previousBroker
+	})
+
+	previousHeartbeatInterval := heartbeatInterval
+	heartbeatInterval = time.Hour
+	t.Cleanup(func() {
+		heartbeatInterval = previousHeartbeatInterval
+	})
+
+	r := newTestRouter(nil, nil, nil)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/events/stream", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	_ = readSSEMessage(t, reader) // hello
+
+	wantPayload := map[string]string{"id": "11", "status": "running"}
+	eventsBroker.Publish(live.Event{
+		ID:      "evt-1",
+		Type:    "job.changed",
+		At:      time.Now(),
+		Payload: wantPayload,
+	})
+
+	msg := readSSEMessage(t, reader)
+	eventType, data := parseSSEMessage(t, msg)
+	if eventType != "job.changed" {
+		t.Fatalf("expected event type job.changed, got %q", eventType)
+	}
+
+	var gotPayload map[string]string
+	if err := json.Unmarshal([]byte(data), &gotPayload); err != nil {
+		t.Fatalf("unmarshal event payload: %v", err)
+	}
+	if gotPayload["id"] != wantPayload["id"] || gotPayload["status"] != wantPayload["status"] {
+		t.Fatalf("expected payload %v, got %v", wantPayload, gotPayload)
+	}
+	if _, ok := gotPayload["type"]; ok {
+		t.Fatalf("expected SSE data to contain payload only, got %q", data)
+	}
+}
+
+func TestRouterRegistersEventsStream(t *testing.T) {
+	previousBroker := eventsBroker
+	eventsBroker = live.NewBroker()
+	t.Cleanup(func() {
+		eventsBroker = previousBroker
+	})
+
+	previousHeartbeatInterval := heartbeatInterval
+	heartbeatInterval = time.Hour
+	t.Cleanup(func() {
+		heartbeatInterval = previousHeartbeatInterval
+	})
+
+	r := newTestRouter(nil, nil, nil)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := srv.Client().Get(srv.URL + "/events/stream")
+	if err != nil {
+		t.Fatalf("get events stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	eventType, _ := parseSSEMessage(t, readSSEMessage(t, bufio.NewReader(resp.Body)))
+	if eventType != "hello" {
+		t.Fatalf("expected router to serve hello event, got %q", eventType)
+	}
+}
+
+func readSSEMessage(t *testing.T, reader *bufio.Reader) string {
+	t.Helper()
+
+	done := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		var lines []string
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				errCh <- err
+				return
+			}
+			lines = append(lines, line)
+			if line == "\n" {
+				done <- strings.Join(lines, "")
+				return
+			}
+		}
+	}()
+
+	select {
+	case msg := <-done:
+		return msg
+	case err := <-errCh:
+		t.Fatalf("read stream: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout reading SSE message")
+	}
+	return ""
+}
+
+func parseSSEMessage(t *testing.T, message string) (string, string) {
+	t.Helper()
+
+	var eventType string
+	var data string
+
+	for _, line := range strings.Split(message, "\n") {
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			eventType = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			data = strings.TrimPrefix(line, "data: ")
+		}
+	}
+
+	if eventType == "" {
+		t.Fatalf("expected event line in message %q", message)
+	}
+	if data == "" {
+		t.Fatalf("expected data line in message %q", message)
+	}
+
+	return eventType, data
 }
 
 func TestCreateCreator(t *testing.T) {
