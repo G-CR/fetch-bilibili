@@ -272,6 +272,7 @@ func (a *App) shutdown(cancelRuntime context.CancelFunc) {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = a.server.Shutdown(shutdownCtx)
+	_ = a.server.Close()
 	a.closeResources()
 }
 

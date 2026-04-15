@@ -83,9 +83,21 @@ func (p *WorkerPool) loop(ctx context.Context, id int) {
 	}
 }
 
+func isUnrecoverableDBError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return msg == "sql: database is closed" || msg == "sql: connection is already closed"
+}
+
 func (p *WorkerPool) consumeOnce(ctx context.Context, id int) {
 	jobsList, err := p.repo.FetchQueued(ctx, 1)
 	if err != nil {
+		if isUnrecoverableDBError(err) {
+			p.logger.Printf("工作线程 %d 数据库已关闭，退出", id)
+			return
+		}
 		p.logger.Printf("工作线程 %d 拉取任务失败: %v", id, err)
 		return
 	}
