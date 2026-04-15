@@ -1,5 +1,5 @@
-ARG GO_IMAGE=m.daocloud.io/docker.io/library/golang:1.22-alpine
-ARG ALPINE_IMAGE=m.daocloud.io/docker.io/library/alpine:3.20
+ARG GO_IMAGE=golang:1.22-alpine
+ARG ALPINE_IMAGE=alpine:3.20
 
 FROM ${GO_IMAGE} AS build
 

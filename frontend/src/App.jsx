@@ -47,6 +47,8 @@ const platformOptions = [
 
 const SYSTEM_RECONCILE_INTERVAL_MS = 30 * 1000;
 const SNAPSHOT_RECONCILE_INTERVAL_MS = 60 * 1000;
+const CONFIG_RESTART_POLL_INTERVAL_MS = 1500;
+const CONFIG_RESTART_TIMEOUT_MS = 45 * 1000;
 const AUTHORITATIVE_LIVE_EVENT_TYPES = new Set([
   "job.changed",
   "video.changed",
@@ -91,6 +93,12 @@ function App() {
   const [savedConfigText, setSavedConfigText] = useState("");
   const [configLoading, setConfigLoading] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
+  const [configRestartState, setConfigRestartState] = useState(() => ({
+    active: false,
+    startedAt: 0,
+    recoveredAt: 0,
+    lastError: ""
+  }));
   const [configValidation, setConfigValidation] = useState(() => ({
     tone: "idle",
     title: "尚未执行保存校验",
@@ -207,6 +215,83 @@ function App() {
     });
   }, [state.jobs]);
 
+  useEffect(() => {
+    if (!configRestartState.active) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timer = 0;
+    const startedAt = Number(configRestartState.startedAt || Date.now());
+
+    const poll = async () => {
+      try {
+        await getSystemStatus(state.apiBase);
+        if (cancelled) {
+          return;
+        }
+
+        setConfigRestartState({
+          active: false,
+          startedAt: 0,
+          recoveredAt: Date.now(),
+          lastError: ""
+        });
+        setConfigValidation({
+          tone: "success",
+          title: "后端已恢复并重新加载配置",
+          detail: "检测到后端已经恢复响应，页面会继续自动同步系统状态；如需二次确认，可直接查看当前编辑器内容。"
+        });
+        pushLog("后端重启完成，配置联动已恢复");
+        showToast("后端已恢复");
+
+        await Promise.allSettled([
+          syncDashboardFromAPI({ silent: true, withLog: false }),
+          loadSystemConfig({ silent: true, preserveValidation: true })
+        ]);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        const message = formatRequestError(error);
+        if (Date.now() - startedAt >= CONFIG_RESTART_TIMEOUT_MS) {
+          setConfigRestartState({
+            active: false,
+            startedAt: 0,
+            recoveredAt: 0,
+            lastError: message
+          });
+          setConfigValidation({
+            tone: "error",
+            title: "配置已保存，但等待后端恢复超时",
+            detail: `配置文件已经写回，但在 45 秒内未检测到后端恢复。请稍后点击“重新加载”，或检查 docker compose logs app --tail=200。最后一次错误：${message}`
+          });
+          pushLog(`等待后端重启恢复超时: ${message}`);
+          showToast("等待后端恢复超时");
+          return;
+        }
+
+        setConfigRestartState((previous) => ({
+          ...previous,
+          lastError: message
+        }));
+        timer = window.setTimeout(() => {
+          void poll();
+        }, CONFIG_RESTART_POLL_INTERVAL_MS);
+      }
+    };
+
+    timer = window.setTimeout(() => {
+      void poll();
+    }, CONFIG_RESTART_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [configRestartState.active, configRestartState.startedAt, state.apiBase]);
+
   function updateState(updater) {
     setState((previous) => (typeof updater === "function" ? updater(previous) : updater));
   }
@@ -216,6 +301,13 @@ function App() {
       ...previous,
       logs: [makeLog(message), ...(previous.logs || [])].slice(0, 18)
     }));
+  }
+
+  function applyConfigDocument(payload) {
+    const nextContent = String(payload?.content || "");
+    setConfigPath(String(payload?.path || ""));
+    setConfigText(nextContent);
+    setSavedConfigText(nextContent);
   }
 
   function showToast(message) {
@@ -303,29 +395,30 @@ function App() {
     }));
   }
 
-  async function loadSystemConfig({ silent = false } = {}) {
+  async function loadSystemConfig({ silent = false, preserveValidation = false } = {}) {
     setConfigLoading(true);
     try {
       const payload = await getSystemConfig(state.apiBase);
-      const nextContent = String(payload?.content || "");
-      setConfigPath(String(payload?.path || ""));
-      setConfigText(nextContent);
-      setSavedConfigText(nextContent);
-      setConfigValidation({
-        tone: "success",
-        title: "配置已加载",
-        detail: "当前编辑器内容已经和后端配置文件同步。修改后保存时会再次执行校验。"
-      });
+      applyConfigDocument(payload);
+      if (!preserveValidation) {
+        setConfigValidation({
+          tone: "success",
+          title: "配置已加载",
+          detail: "当前编辑器内容已经和后端配置文件同步。修改后保存时会再次执行校验。"
+        });
+      }
       if (!silent) {
         showToast("配置已加载");
       }
     } catch (error) {
       const message = formatRequestError(error);
-      setConfigValidation({
-        tone: "error",
-        title: "配置加载失败",
-        detail: message
-      });
+      if (!preserveValidation) {
+        setConfigValidation({
+          tone: "error",
+          title: "配置加载失败",
+          detail: message
+        });
+      }
       pushLog(`加载配置失败: ${message}`);
       if (!silent) {
         showToast(message);
@@ -337,6 +430,12 @@ function App() {
 
   async function handleSaveConfig() {
     if (configText === savedConfigText) {
+      setConfigRestartState((previous) => ({
+        ...previous,
+        active: false,
+        startedAt: 0,
+        lastError: ""
+      }));
       setConfigValidation({
         tone: "idle",
         title: "配置未变化",
@@ -353,12 +452,27 @@ function App() {
       if (result?.path) {
         setConfigPath(String(result.path));
       }
+      if (result?.changed) {
+        setConfigRestartState({
+          active: true,
+          startedAt: Date.now(),
+          recoveredAt: 0,
+          lastError: ""
+        });
+      } else {
+        setConfigRestartState((previous) => ({
+          ...previous,
+          active: false,
+          startedAt: 0,
+          lastError: ""
+        }));
+      }
       setConfigValidation(
         result?.changed
           ? {
-              tone: "success",
-              title: "配置校验通过并已保存",
-              detail: "配置文件已写回磁盘，后端正在重启并重新加载最新配置。"
+              tone: "warning",
+              title: "配置校验通过并已保存，后端正在重启",
+              detail: "配置文件已写回磁盘。后端在短暂重启期间可能暂时不可用，页面会自动检测服务恢复并继续同步。"
             }
           : {
               tone: "idle",
@@ -370,6 +484,12 @@ function App() {
       showToast(result?.changed ? "配置已保存，后端正在重启" : "配置未变化");
     } catch (error) {
       const message = formatRequestError(error);
+      setConfigRestartState((previous) => ({
+        ...previous,
+        active: false,
+        startedAt: 0,
+        lastError: message
+      }));
       setConfigValidation({
         tone: "error",
         title: "配置校验失败",
@@ -469,6 +589,7 @@ function App() {
   const riskBackoffLabel = riskBackoffText(state.system.riskActive, state.system.riskBackoffSeconds);
   const cleanupPressureBytes = Math.max(0, Number(state.storage.usedBytes || 0) - Number(state.storage.safeBytes || 0));
   const configDirty = configText !== savedConfigText;
+  const configRestarting = configRestartState.active;
 
   return (
     <div className="shell">
@@ -973,15 +1094,15 @@ function App() {
                 <p className="section-kicker">配置状态</p>
                 <h3>系统配置文件</h3>
               </div>
-              <span className={configDirty ? "pill pill--warning" : "pill pill--soft"}>
-                {configDirty ? "有未保存修改" : "已与文件同步"}
+              <span className={configRestarting || configDirty ? "pill pill--warning" : "pill pill--soft"}>
+                {configRestarting ? "等待后端恢复" : configDirty ? "有未保存修改" : "已与文件同步"}
               </span>
             </div>
             <div className="config-meta">
               <span className="config-meta__label">配置路径</span>
               <code className="config-meta__value">{configPath || "-"}</code>
             </div>
-            <p className="panel-note">保存前会先校验 YAML 与业务配置；保存成功后，后端容器会自动重启以加载新配置。</p>
+            <p className="panel-note">保存前会先校验 YAML 与业务配置。若内容发生变化，后端会自动重启以加载新配置，页面会自动等待恢复并继续同步。</p>
           </div>
 
           <div className="panel panel--span config-editor">
@@ -1012,8 +1133,20 @@ function App() {
             </div>
 
             <div className="config-status">
-              <span>{configLoading ? "正在从后端读取配置文件" : "当前编辑内容来自后端配置文件"}</span>
-              <span>{configDirty ? "检测到未保存修改" : "当前内容未修改"}</span>
+              <span>
+                {configLoading
+                  ? "正在从后端读取配置文件"
+                  : configRestarting
+                    ? "配置已写回，正在检测后端恢复"
+                    : "当前编辑内容来自后端配置文件"}
+              </span>
+              <span>
+                {configRestarting
+                  ? "重启期间接口可能短暂不可用，无需手动刷新"
+                  : configDirty
+                    ? "检测到未保存修改"
+                    : "当前内容未修改"}
+              </span>
             </div>
 
             <label className="settings-field">
@@ -1174,6 +1307,8 @@ function configValidationText(tone) {
   switch (tone) {
     case "success":
       return "通过";
+    case "warning":
+      return "处理中";
     case "error":
       return "失败";
     default:

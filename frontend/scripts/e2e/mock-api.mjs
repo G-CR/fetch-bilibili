@@ -8,6 +8,7 @@ const scheduledTimers = new Set();
 let state = initialState();
 let streamAvailable = true;
 let nextEventID = 1;
+let configRestartUntil = 0;
 
 function initialState() {
   return {
@@ -208,6 +209,22 @@ function resetRuntimeState() {
   closeAllStreamClients();
   streamAvailable = true;
   nextEventID = 1;
+  configRestartUntil = 0;
+}
+
+function isConfigRestarting() {
+  return configRestartUntil > Date.now();
+}
+
+function triggerConfigRestart() {
+  const restartMs = 1200;
+  configRestartUntil = Date.now() + restartMs;
+  streamAvailable = false;
+  closeAllStreamClients();
+  schedule(restartMs, () => {
+    configRestartUntil = 0;
+    streamAvailable = true;
+  });
 }
 
 function readBody(req) {
@@ -339,6 +356,21 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (isConfigRestarting() && !req.url.startsWith("/__")) {
+      if (req.method === "GET" && req.url === "/events/stream") {
+        res.writeHead(503, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-cache",
+          "Access-Control-Allow-Origin": "*"
+        });
+        res.end("server restarting");
+        return;
+      }
+
+      sendJSON(res, 503, { error: "后端正在重启，请稍后重试" });
+      return;
+    }
+
     if (req.method === "GET" && req.url === "/healthz") {
       sendJSON(res, 200, { status: "ok" });
       return;
@@ -520,6 +552,7 @@ const server = http.createServer(async (req, res) => {
       const changed = nextContent !== state.configText;
       if (changed) {
         state.configText = nextContent;
+        triggerConfigRestart();
       }
       sendJSON(res, 200, {
         changed,

@@ -45,6 +45,23 @@ func (w *stubWorker) Wait() {
 	atomic.StoreInt32(&w.waited, 1)
 }
 
+type blockingWorker struct {
+	started    chan struct{}
+	canceled   chan struct{}
+	waitCalled chan struct{}
+}
+
+func (w *blockingWorker) Start(ctx context.Context) {
+	close(w.started)
+	<-ctx.Done()
+	close(w.canceled)
+}
+
+func (w *blockingWorker) Wait() {
+	close(w.waitCalled)
+	<-w.canceled
+}
+
 type stubCreatorSyncer struct {
 	started int32
 }
@@ -59,6 +76,21 @@ type stubAuthWatcher struct {
 
 func (s *stubAuthWatcher) Start(ctx context.Context) {
 	atomic.StoreInt32(&s.started, 1)
+}
+
+type stubLibrarySyncer struct {
+	started    int32
+	rebuilt    int32
+	rebuildErr error
+}
+
+func (s *stubLibrarySyncer) Start(ctx context.Context) {
+	atomic.StoreInt32(&s.started, 1)
+}
+
+func (s *stubLibrarySyncer) RebuildAll(ctx context.Context) error {
+	atomic.AddInt32(&s.rebuilt, 1)
+	return s.rebuildErr
 }
 
 type stubHTTPDashboardService struct{}
@@ -332,6 +364,78 @@ func TestNewInjectsLiveBrokerIntoTaskChain(t *testing.T) {
 	}
 }
 
+func TestNewCreatesLibrarySyncer(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	origMySQL := newMySQL
+	origScheduler := newScheduler
+	origWorker := newWorker
+	origRouter := newRouter
+	origDashboardService := newDashboardService
+	origRunMySQLMigrations := runMySQLMigrations
+	origLibrarySyncer := newLibrarySyncer
+	defer func() {
+		newMySQL = origMySQL
+		newScheduler = origScheduler
+		newWorker = origWorker
+		newRouter = origRouter
+		newDashboardService = origDashboardService
+		runMySQLMigrations = origRunMySQLMigrations
+		newLibrarySyncer = origLibrarySyncer
+	}()
+
+	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
+		return db, nil
+	}
+	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+		return &stubScheduler{}, nil
+	}
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
+		return &stubWorker{}
+	}
+	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
+		return &stubHTTPDashboardService{}
+	}
+	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
+		return nil
+	}
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+		return http.NewServeMux()
+	}
+
+	libraryStub := &stubLibrarySyncer{}
+	var gotRoot string
+	var gotBroker *live.Broker
+	newLibrarySyncer = func(root string, creators repo.CreatorRepository, videos repo.VideoRepository, broker *live.Broker, reconcileInterval time.Duration) libraryRunner {
+		gotRoot = root
+		gotBroker = broker
+		return libraryStub
+	}
+
+	cfg := config.Default()
+	cfg.Storage.RootDir = "/tmp/test-library"
+	cfg.MySQL.DSN = "dsn"
+	cfg.Server.Addr = "127.0.0.1:0"
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+	if app.librarySync != libraryStub {
+		t.Fatalf("expected library syncer injected")
+	}
+	if gotRoot != cfg.Storage.RootDir {
+		t.Fatalf("expected root %s, got %s", cfg.Storage.RootDir, gotRoot)
+	}
+	if gotBroker == nil || gotBroker != app.broker {
+		t.Fatalf("expected library syncer receives app broker")
+	}
+}
+
 func TestNewMySQLError(t *testing.T) {
 	origMySQL := newMySQL
 	defer func() { newMySQL = origMySQL }()
@@ -476,6 +580,69 @@ func TestRunNoSchedulerOrWorker(t *testing.T) {
 	}
 }
 
+func TestRunRestartCancelsRuntimeBeforeWaitingWorkers(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	origRunStartupRecovery := runStartupRecovery
+	defer func() {
+		runStartupRecovery = origRunStartupRecovery
+	}()
+	runStartupRecovery = func(context.Context, *App) error {
+		return nil
+	}
+
+	workerStub := &blockingWorker{
+		started:    make(chan struct{}),
+		canceled:   make(chan struct{}),
+		waitCalled: make(chan struct{}),
+	}
+
+	app := &App{
+		db:        db,
+		workers:   workerStub,
+		server:    &http.Server{Addr: "127.0.0.1:0", Handler: http.NewServeMux()},
+		restartCh: make(chan struct{}, 1),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(context.Background())
+	}()
+
+	select {
+	case <-workerStub.started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("worker did not start")
+	}
+
+	app.requestRestart()
+
+	select {
+	case <-workerStub.canceled:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected worker context canceled before shutdown completed")
+	}
+
+	select {
+	case <-workerStub.waitCalled:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected shutdown to wait worker exit")
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrRestartRequested) {
+			t.Fatalf("expected ErrRestartRequested, got %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("run did not return after restart request")
+	}
+}
+
 func TestRunStartsCreatorSyncer(t *testing.T) {
 	db, _, err := sqlmock.New()
 	if err != nil {
@@ -555,6 +722,90 @@ func TestRunStartsCreatorSyncer(t *testing.T) {
 
 	if atomic.LoadInt32(&syncerStub.started) != 1 {
 		t.Fatalf("creator syncer not started")
+	}
+}
+
+func TestRunStartsLibrarySyncerAndStartupRebuild(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	origMySQL := newMySQL
+	origScheduler := newScheduler
+	origWorker := newWorker
+	origRouter := newRouter
+	origDashboardService := newDashboardService
+	origRunMySQLMigrations := runMySQLMigrations
+	origRunStartupRecovery := runStartupRecovery
+	origLibrarySyncer := newLibrarySyncer
+	defer func() {
+		newMySQL = origMySQL
+		newScheduler = origScheduler
+		newWorker = origWorker
+		newRouter = origRouter
+		newDashboardService = origDashboardService
+		runMySQLMigrations = origRunMySQLMigrations
+		runStartupRecovery = origRunStartupRecovery
+		newLibrarySyncer = origLibrarySyncer
+	}()
+
+	libraryStub := &stubLibrarySyncer{}
+	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
+		return db, nil
+	}
+	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+		return &stubScheduler{}, nil
+	}
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
+		return &stubWorker{}
+	}
+	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
+		return &stubHTTPDashboardService{}
+	}
+	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
+		return nil
+	}
+	runStartupRecovery = func(context.Context, *App) error {
+		return nil
+	}
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+		return http.NewServeMux()
+	}
+	newLibrarySyncer = func(root string, creators repo.CreatorRepository, videos repo.VideoRepository, broker *live.Broker, reconcileInterval time.Duration) libraryRunner {
+		return libraryStub
+	}
+
+	cfg := config.Default()
+	cfg.Storage.RootDir = "/tmp"
+	cfg.MySQL.DSN = "dsn"
+	cfg.Server.Addr = "127.0.0.1:0"
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = app.Run(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for (atomic.LoadInt32(&libraryStub.started) == 0 || atomic.LoadInt32(&libraryStub.rebuilt) == 0) && time.Now().Before(deadline) {
+		time.Sleep(1 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if atomic.LoadInt32(&libraryStub.rebuilt) != 1 {
+		t.Fatalf("expected startup rebuild once, got %d", atomic.LoadInt32(&libraryStub.rebuilt))
+	}
+	if atomic.LoadInt32(&libraryStub.started) != 1 {
+		t.Fatalf("expected library syncer started")
 	}
 }
 

@@ -80,6 +80,12 @@ test("可以加载并保存系统配置", async ({ page }) => {
   await page.getByTestId("config-save-button").click();
 
   await expect(page.getByText("配置已保存，后端正在重启")).toBeVisible();
+  await expect(page.getByTestId("config-validation-detail")).toContainText("页面会自动检测服务恢复");
+  await expect(page.getByText("等待后端恢复")).toBeVisible();
+  await expect(page.getByTestId("config-validation-detail")).toContainText("后端已恢复并重新加载配置", {
+    timeout: 10000
+  });
+  await expect(page.getByText("已与文件同步")).toBeVisible();
 });
 
 test("配置校验失败时会展示错误详情", async ({ page }) => {

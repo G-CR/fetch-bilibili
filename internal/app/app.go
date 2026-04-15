@@ -43,6 +43,11 @@ type creatorSyncRunner interface {
 	Start(context.Context)
 }
 
+type libraryRunner interface {
+	Start(context.Context)
+	RebuildAll(context.Context) error
+}
+
 var newMySQL = db.NewMySQL
 var runMySQLMigrations = db.RunMySQLMigrations
 var newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
@@ -64,9 +69,14 @@ var newAuthWatcher = func(client bilibili.AuthClient, reloadInterval, checkInter
 var newCreatorSyncer = func(service *creator.Service, filePath string, interval time.Duration) creatorSyncRunner {
 	return creator.NewFileSyncer(service, filePath, interval, nil)
 }
+var newLibrarySyncer = func(root string, creators repo.CreatorRepository, videos repo.VideoRepository, broker *live.Broker, reconcileInterval time.Duration) libraryRunner {
+	return library.NewSyncer(root, library.NewExporter(creators, videos), broker, library.WithReconcileInterval(reconcileInterval))
+}
 var runStartupRecovery = func(ctx context.Context, app *App) error {
 	return app.recoverRuntimeState(ctx)
 }
+
+const libraryReconcileInterval = 6 * time.Hour
 
 var ErrRestartRequested = errors.New("restart requested")
 
@@ -78,6 +88,7 @@ type App struct {
 	workers     workerRunner
 	authWatcher authWatcherRunner
 	creatorSync creatorSyncRunner
+	librarySync libraryRunner
 	broker      *live.Broker
 	server      *http.Server
 	restartCh   chan struct{}
@@ -168,6 +179,7 @@ func New(cfg config.Config) (*App, error) {
 	if cfg.Creators.File != "" {
 		creatorSync = newCreatorSyncer(creatorService, cfg.Creators.File, cfg.Creators.ReloadInterval)
 	}
+	librarySync := newLibrarySyncer(cfg.Storage.RootDir, repos.Creators, repos.Videos, broker, libraryReconcileInterval)
 
 	dashboardService := newDashboardService(database, repos.Creators, repos.Videos, repos.Jobs, client, cfg)
 	app := &App{
@@ -178,6 +190,7 @@ func New(cfg config.Config) (*App, error) {
 		workers:     pool,
 		authWatcher: authWatcher,
 		creatorSync: creatorSync,
+		librarySync: librarySync,
 		broker:      broker,
 		restartCh:   make(chan struct{}, 1),
 	}
@@ -195,22 +208,30 @@ func New(cfg config.Config) (*App, error) {
 
 func (a *App) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
+	runtimeCtx, cancelRuntime := context.WithCancel(ctx)
+	defer cancelRuntime()
 
-	if err := runStartupRecovery(ctx, a); err != nil {
+	if err := runStartupRecovery(runtimeCtx, a); err != nil {
 		log.Printf("启动恢复失败: %v", err)
+	}
+	if a.librarySync != nil {
+		if err := a.librarySync.RebuildAll(runtimeCtx); err != nil {
+			log.Printf("浏览目录启动重建失败: %v", err)
+		}
+		go a.librarySync.Start(runtimeCtx)
 	}
 
 	if a.scheduler != nil {
-		go a.scheduler.Start(ctx)
+		go a.scheduler.Start(runtimeCtx)
 	}
 	if a.workers != nil {
-		go a.workers.Start(ctx)
+		go a.workers.Start(runtimeCtx)
 	}
 	if a.authWatcher != nil {
-		go a.authWatcher.Start(ctx)
+		go a.authWatcher.Start(runtimeCtx)
 	}
 	if a.creatorSync != nil {
-		go a.creatorSync.Start(ctx)
+		go a.creatorSync.Start(runtimeCtx)
 	}
 	go func() {
 		errCh <- a.server.ListenAndServe()
@@ -218,12 +239,13 @@ func (a *App) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		a.shutdown()
+		a.shutdown(cancelRuntime)
 		return ctx.Err()
 	case <-a.restartCh:
-		a.shutdown()
+		a.shutdown(cancelRuntime)
 		return ErrRestartRequested
 	case err := <-errCh:
+		cancelRuntime()
 		a.closeResources()
 		return err
 	}
@@ -243,7 +265,10 @@ func (a *App) requestRestart() {
 	}
 }
 
-func (a *App) shutdown() {
+func (a *App) shutdown(cancelRuntime context.CancelFunc) {
+	if cancelRuntime != nil {
+		cancelRuntime()
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = a.server.Shutdown(shutdownCtx)
@@ -251,10 +276,10 @@ func (a *App) shutdown() {
 }
 
 func (a *App) closeResources() {
-	_ = a.db.Close()
 	if a.workers != nil {
 		a.workers.Wait()
 	}
+	_ = a.db.Close()
 }
 
 func (a *App) recoverRuntimeState(ctx context.Context) error {

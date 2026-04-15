@@ -797,6 +797,11 @@ textarea {
   background: rgba(92, 211, 154, 0.05);
 }
 
+.config-card--warning {
+  border-color: rgba(246, 184, 95, 0.24);
+  background: rgba(246, 184, 95, 0.08);
+}
+
 .config-card--error {
   border-color: rgba(255, 111, 134, 0.24);
   background: rgba(255, 111, 134, 0.06);

@@ -1,0 +1,13 @@
+.git
+.github
+.env
+.env.*
+data/
+frontend/
+node_modules/
+docs/
+coverage/
+tmp/
+dist/
+*.log
+.DS_Store

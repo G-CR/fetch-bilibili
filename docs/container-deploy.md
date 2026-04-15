@@ -7,7 +7,7 @@
 ## 2. 文件说明
 - `Dockerfile`：多阶段构建 Go 二进制。
 - `docker-compose.yml`：编排 MySQL、后端应用与前端控制台。
-- `.env.example`：国内镜像源与镜像标签示例。
+- `.env.example`：镜像源与镜像标签示例。
 - `configs/config.example.yaml`：配置模板。
 - `configs/config.yaml`：容器默认运行配置。
 
@@ -38,6 +38,7 @@ docker compose up -d --build
 - 前端容器使用独立的 `nginx:alpine` 镜像提供静态页面，不再复用后端镜像。
 - 因此前端在执行 `docker compose up -d --build` 之前，需要先在宿主机完成一次前端构建。
 - 当前前端默认以 `API 模式` 启动，默认访问后端地址 `http://localhost:8080`。
+- 在前端设置页保存配置后，如内容有变化，`app` 容器会自动重启；页面会显示「重启中 / 已恢复」状态，重启窗口内短暂不可用属于正常现象。
 
 ### 5.1 前端构建后再启动容器
 ```bash
@@ -71,17 +72,25 @@ creators:
 ```
 
 ## 6. 国内镜像源配置
-项目默认把 `mysql`、`golang`、`alpine` 都切到了国内可访问的镜像前缀，定义如下：
+项目默认使用一组已在当前环境验证可用的华为云 SWR Docker Hub 同步地址：
 
 ```dotenv
-MYSQL_IMAGE=m.daocloud.io/docker.io/library/mysql:8.0
-GO_IMAGE=m.daocloud.io/docker.io/library/golang:1.22-alpine
-ALPINE_IMAGE=m.daocloud.io/docker.io/library/alpine:3.20
+MYSQL_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/mysql:8.0
+GO_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/golang:1.22-alpine
+ALPINE_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/alpine:3.20
 APP_IMAGE=fetch-bilibili-app
-FRONTEND_IMAGE=m.daocloud.io/docker.io/library/nginx:1.27-alpine
+FRONTEND_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/nginx:1.27-alpine
 ```
 
 `docker compose` 会自动读取项目根目录的 `.env`。如果需要更换镜像源，只需要修改 `.env`，不需要改 `Dockerfile` 或 `docker-compose.yml`。
+例如，你也可以按需切到官方源或私有仓库：
+
+```dotenv
+MYSQL_IMAGE=mysql:8.0
+GO_IMAGE=golang:1.22-alpine
+ALPINE_IMAGE=alpine:3.20
+FRONTEND_IMAGE=nginx:1.27-alpine
+```
 
 ### 6.1 Docker Desktop
 在 `Settings -> Docker Engine` 中加入：
@@ -113,6 +122,7 @@ sudo systemctl restart docker
 ### 6.3 使用建议
 - 保持镜像 tag 固定，不要使用 `latest`。
 - 如果公共镜像在高峰期不稳定，优先切换 `.env` 到你的企业私有仓库或云厂商镜像仓库。
+- 如果 `docker compose build app` 在拉取基础镜像阶段失败，优先排查本机代理、Docker Daemon 镜像加速器和当前 `.env` 指向的镜像源，而不是先怀疑项目构建逻辑。
 - 前端容器默认使用独立的 `nginx:alpine` 静态服务镜像，避免受后端镜像入口点影响。
 
 ## 7. 初始化数据库
