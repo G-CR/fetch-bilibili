@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,9 +122,9 @@ creators:
 	syncer := NewFileSyncer(svc, path, 0, nil)
 
 	syncer.syncOnce(context.Background(), true)
-	count := repoStub.count
+	count := atomic.LoadInt64(&repoStub.count)
 	syncer.syncOnce(context.Background(), false)
-	if repoStub.count != count {
+	if atomic.LoadInt64(&repoStub.count) != count {
 		t.Fatalf("expected unchanged to skip")
 	}
 }
@@ -148,7 +149,7 @@ creators:
 	go syncer.Start(ctx)
 	<-ctx.Done()
 
-	if repoStub.count == 0 {
+	if atomic.LoadInt64(&repoStub.count) == 0 {
 		t.Fatalf("expected sync to run")
 	}
 }
@@ -182,8 +183,8 @@ creators:
 	syncer := NewFileSyncer(svc, path, 0, nil)
 
 	syncer.syncOnce(context.Background(), true)
-	if repoStub.count != 0 {
-		t.Fatalf("expected removed creator not re-upserted, got count=%d", repoStub.count)
+	if atomic.LoadInt64(&repoStub.count) != 0 {
+		t.Fatalf("expected removed creator not re-upserted, got count=%d", atomic.LoadInt64(&repoStub.count))
 	}
 }
 

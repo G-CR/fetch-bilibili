@@ -65,6 +65,9 @@ func (s *Service) Upsert(ctx context.Context, entry Entry) (repo.Creator, error)
 		return repo.Creator{}, err
 	}
 	creator.ID = id
+	if finalCreator, err := s.repo.FindByID(ctx, id); err == nil {
+		creator = finalCreator
+	}
 	s.publishCreatorChanged(creator)
 	return creator, nil
 }
@@ -212,6 +215,9 @@ func (s *Service) upsertFromFile(ctx context.Context, entry Entry) (repo.Creator
 		return repo.Creator{}, false, err
 	}
 	creator.ID = id
+	if finalCreator, err := s.repo.FindByID(ctx, id); err == nil {
+		creator = finalCreator
+	}
 	s.publishCreatorChanged(creator)
 	return creator, false, nil
 }

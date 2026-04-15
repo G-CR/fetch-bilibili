@@ -197,6 +197,12 @@ func (f *fakeVideos) UpdateState(ctx context.Context, id int64, state string) er
 		f.states = make(map[int64]string)
 	}
 	f.states[id] = state
+	if f.find != nil {
+		if v, ok := f.find[id]; ok {
+			v.State = state
+			f.find[id] = v
+		}
+	}
 	return nil
 }
 
@@ -799,6 +805,9 @@ func TestHandleCleanupDeletesLowestPriorityFile(t *testing.T) {
 				FileSizeBytes:        5,
 			},
 		},
+		find: map[int64]repo.Video{
+			1: {ID: 1, Platform: "bilibili", VideoID: "to-delete", State: "DOWNLOADED"},
+		},
 	}
 	files := &fakeVideoFiles{
 		fileToVideo:  map[int64]int64{11: 1, 12: 2},
@@ -883,6 +892,9 @@ func TestHandleCleanupPublishesStorageEvent(t *testing.T) {
 				FileSizeBytes: 5,
 			},
 		},
+		find: map[int64]repo.Video{
+			1: {ID: 1, Platform: "bilibili", VideoID: "to-delete", State: "DOWNLOADED"},
+		},
 	}
 	files := &fakeVideoFiles{
 		fileToVideo:  map[int64]int64{1: 1},
@@ -932,6 +944,25 @@ func TestHandleCleanupPublishesVideoEventWhenDeleted(t *testing.T) {
 				FileSizeBytes: 5,
 			},
 		},
+		find: map[int64]repo.Video{
+			1: {
+				ID:            1,
+				Platform:      "bilibili",
+				VideoID:       "to-delete",
+				CreatorID:     9,
+				Title:         "cleanup-target",
+				Description:   "kept-description",
+				PublishTime:   time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC),
+				Duration:      123,
+				CoverURL:      "https://example.com/cover.jpg",
+				ViewCount:     33,
+				FavoriteCount: 44,
+				OutOfPrintAt:  time.Date(2025, 2, 3, 4, 5, 6, 0, time.UTC),
+				StableAt:      time.Date(2025, 3, 4, 5, 6, 7, 0, time.UTC),
+				LastCheckAt:   time.Date(2025, 4, 5, 6, 7, 8, 0, time.UTC),
+				State:         "DOWNLOADED",
+			},
+		},
 	}
 	files := &fakeVideoFiles{
 		fileToVideo:  map[int64]int64{1: 1},
@@ -955,6 +986,102 @@ func TestHandleCleanupPublishesVideoEventWhenDeleted(t *testing.T) {
 	assertVideoChangedPayloadShape(t, payload)
 	if got := payload["state"]; got != "DELETED" {
 		t.Fatalf("expected DELETED state, got %v", got)
+	}
+	if got := payload["description"]; got != "kept-description" {
+		t.Fatalf("expected description from db snapshot, got %v", got)
+	}
+	if got := payload["cover_url"]; got != "https://example.com/cover.jpg" {
+		t.Fatalf("expected cover_url from db snapshot, got %v", got)
+	}
+	if got := payload["publish_time"]; got == "" {
+		t.Fatalf("expected publish_time from db snapshot")
+	}
+}
+
+func TestHandleDownloadPublishesStorageEventWithoutRepeatedFullScan(t *testing.T) {
+	origScan := scanStorageUsageFn
+	scanCalls := 0
+	scanStorageUsageFn = func(root string) (int64, int64, error) {
+		scanCalls++
+		return 0, 0, nil
+	}
+	defer func() { scanStorageUsageFn = origScan }()
+
+	dir := t.TempDir()
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {ID: 1, VideoID: "v1", Platform: "bilibili", State: "NEW"},
+			2: {ID: 2, VideoID: "v2", Platform: "bilibili", State: "NEW"},
+		},
+	}
+	files := &fakeVideoFiles{}
+	client := &stubClient{download: map[string]int64{"v1": 10, "v2": 20}}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, client, 30, dir, 0, 0, nil)
+	h.SetPublisher(publisher)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(1)}}); err != nil {
+		t.Fatalf("download 1 error: %v", err)
+	}
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(2)}}); err != nil {
+		t.Fatalf("download 2 error: %v", err)
+	}
+
+	if scanCalls != 1 {
+		t.Fatalf("expected storage scan only once for init, got %d", scanCalls)
+	}
+}
+
+func TestHandleCleanupPublishesStorageEventWithoutRepeatedFullScan(t *testing.T) {
+	origScan := scanStorageUsageFn
+	scanCalls := 0
+	scanStorageUsageFn = func(root string) (int64, int64, error) {
+		scanCalls++
+		return 5, 1, nil
+	}
+	defer func() { scanStorageUsageFn = origScan }()
+
+	dir := t.TempDir()
+	path := buildVideoPath(dir, "bilibili", "to-delete")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("12345"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	videos := &fakeVideos{
+		cleanupList: []repo.CleanupCandidate{
+			{
+				VideoID:       1,
+				SourceVideoID: "to-delete",
+				Title:         "cleanup-target",
+				State:         "DOWNLOADED",
+				FileID:        1,
+				FilePath:      path,
+				FileSizeBytes: 5,
+			},
+		},
+		find: map[int64]repo.Video{
+			1: {ID: 1, Platform: "bilibili", VideoID: "to-delete", State: "DOWNLOADED"},
+		},
+	}
+	files := &fakeVideoFiles{
+		fileToVideo:  map[int64]int64{1: 1},
+		countByVideo: map[int64]int64{1: 1},
+	}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(10, 2, true)
+	h.SetPublisher(publisher)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCleanup}); err != nil {
+		t.Fatalf("cleanup error: %v", err)
+	}
+	if scanCalls != 1 {
+		t.Fatalf("expected cleanup success path to avoid second full scan, got %d", scanCalls)
 	}
 }
 

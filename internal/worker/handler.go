@@ -30,6 +30,21 @@ type stateEventPublisher interface {
 	Publish(evt live.Event)
 }
 
+type storageSnapshot struct {
+	initialized bool
+	usedBytes   int64
+	fileCount   int64
+	rareVideos  int64
+}
+
+type storageDelta struct {
+	usedBytes  int64
+	fileCount  int64
+	rareVideos int64
+}
+
+var scanStorageUsageFn = scanStorageUsage
+
 type DefaultHandler struct {
 	creators         repo.CreatorRepository
 	videos           repo.VideoRepository
@@ -52,6 +67,8 @@ type DefaultHandler struct {
 	cleanupLimit     int
 	publisher        stateEventPublisher
 	now              func() time.Time
+	storageMu        sync.Mutex
+	storageSnapshot  storageSnapshot
 }
 
 func NewDefaultHandler(creators repo.CreatorRepository, videos repo.VideoRepository, videoFiles repo.VideoFileRepository, jobs repo.JobRepository, client VideoClient, stableDays int, storageRoot string, globalQPS, perCreatorQPS int, logger *log.Logger) *DefaultHandler {
@@ -204,7 +221,7 @@ func (h *DefaultHandler) handleCleanup(ctx context.Context) error {
 		return errors.New("storage.root_dir 未配置")
 	}
 
-	usedBytes, _, err := scanStorageUsage(h.storageRoot)
+	usedBytes, fileCount, err := scanStorageUsageFn(h.storageRoot)
 	if err != nil {
 		return err
 	}
@@ -214,6 +231,7 @@ func (h *DefaultHandler) handleCleanup(ctx context.Context) error {
 		h.logger.Printf("清理任务跳过：当前占用 %d 字节，未超过安全阈值", usedBytes)
 		return nil
 	}
+	h.seedStorageSnapshot(ctx, usedBytes, fileCount)
 
 	candidates, err := h.videos.ListCleanupCandidates(ctx, repo.CleanupCandidateFilter{
 		Limit:             h.cleanupLimit,
@@ -236,20 +254,24 @@ func (h *DefaultHandler) handleCleanup(ctx context.Context) error {
 	})
 
 	var (
-		freedBytes int64
-		lastErr    error
+		freedBytes     int64
+		deletedFiles   int64
+		rareVideosDiff int64
+		lastErr        error
 	)
 	for _, candidate := range candidates {
 		if freedBytes >= targetBytes {
 			break
 		}
-		freed, err := h.deleteCleanupCandidate(ctx, candidate)
+		freed, deleted, rareDelta, err := h.deleteCleanupCandidate(ctx, candidate)
 		if err != nil {
 			h.logger.Printf("清理候选失败 video_id=%s title=%s: %v", candidate.SourceVideoID, candidate.Title, err)
 			lastErr = err
 			continue
 		}
 		freedBytes += freed
+		deletedFiles += deleted
+		rareVideosDiff += rareDelta
 	}
 
 	if freedBytes < targetBytes {
@@ -260,7 +282,11 @@ func (h *DefaultHandler) handleCleanup(ctx context.Context) error {
 	}
 
 	h.logger.Printf("清理任务完成：已释放 %d 字节，目标 %d 字节", freedBytes, targetBytes)
-	h.publishStorageChanged(ctx)
+	h.publishStorageChanged(ctx, storageDelta{
+		usedBytes:  -freedBytes,
+		fileCount:  -deletedFiles,
+		rareVideos: rareVideosDiff,
+	})
 	return nil
 }
 
@@ -293,47 +319,50 @@ func (h *DefaultHandler) cleanupTarget(usedBytes int64) int64 {
 	return usedBytes - threshold
 }
 
-func (h *DefaultHandler) deleteCleanupCandidate(ctx context.Context, candidate repo.CleanupCandidate) (int64, error) {
+func (h *DefaultHandler) deleteCleanupCandidate(ctx context.Context, candidate repo.CleanupCandidate) (int64, int64, int64, error) {
 	freedBytes := candidate.FileSizeBytes
 	info, err := os.Stat(candidate.FilePath)
 	switch {
 	case err == nil:
 		freedBytes = info.Size()
 		if err := os.Remove(candidate.FilePath); err != nil && !os.IsNotExist(err) {
-			return 0, err
+			return 0, 0, 0, err
 		}
 	case os.IsNotExist(err):
 		freedBytes = 0
 	case err != nil:
-		return 0, err
+		return 0, 0, 0, err
 	}
 
 	deleted, err := h.videoFiles.DeleteByID(ctx, candidate.FileID)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 	if deleted == 0 {
-		return 0, fmt.Errorf("文件记录不存在 file_id=%d", candidate.FileID)
+		return 0, 0, 0, fmt.Errorf("文件记录不存在 file_id=%d", candidate.FileID)
 	}
+	deletedFiles := deleted
 
 	remaining, err := h.videoFiles.CountByVideoID(ctx, candidate.VideoID)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
+	rareVideosDelta := int64(0)
 	if remaining == 0 {
 		if err := h.videos.UpdateState(ctx, candidate.VideoID, "DELETED"); err != nil {
-			return 0, err
+			return 0, 0, 0, err
 		}
-		h.publishVideoChanged(repo.Video{
-			ID:            candidate.VideoID,
-			Platform:      candidate.Platform,
-			VideoID:       candidate.SourceVideoID,
-			CreatorID:     candidate.CreatorID,
-			Title:         candidate.Title,
-			ViewCount:     candidate.ViewCount,
-			FavoriteCount: candidate.FavoriteCount,
-			State:         "DELETED",
-		})
+		if candidate.State == "OUT_OF_PRINT" {
+			rareVideosDelta = -1
+		}
+		if h.publisher != nil {
+			video, err := h.videos.FindByID(ctx, candidate.VideoID)
+			if err != nil {
+				return 0, 0, 0, err
+			}
+			video.State = "DELETED"
+			h.publishVideoChanged(video)
+		}
 	}
 
 	h.logger.Printf(
@@ -347,7 +376,7 @@ func (h *DefaultHandler) deleteCleanupCandidate(ctx context.Context, candidate r
 		freedBytes,
 		candidate.FilePath,
 	)
-	return freedBytes, nil
+	return freedBytes, deletedFiles, rareVideosDelta, nil
 }
 
 func (h *DefaultHandler) handleCheck(ctx context.Context, job repo.Job) error {
@@ -454,6 +483,9 @@ func (h *DefaultHandler) handleDownload(ctx context.Context, job repo.Job) error
 			return err
 		}
 	}
+	if err := h.ensureStorageSnapshotInitialized(ctx); err != nil {
+		return err
+	}
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -490,7 +522,10 @@ func (h *DefaultHandler) handleDownload(ctx context.Context, job repo.Job) error
 	}
 	video.State = "DOWNLOADED"
 	h.publishVideoChanged(video)
-	h.publishStorageChanged(ctx)
+	h.publishStorageChanged(ctx, storageDelta{
+		usedBytes: size,
+		fileCount: 1,
+	})
 	return nil
 }
 
@@ -656,23 +691,15 @@ func (h *DefaultHandler) publishVideoChanged(video repo.Video) {
 	})
 }
 
-func (h *DefaultHandler) publishStorageChanged(ctx context.Context) {
+func (h *DefaultHandler) publishStorageChanged(ctx context.Context, delta storageDelta) {
 	if h.publisher == nil || h.storageRoot == "" {
 		return
 	}
-	usedBytes, fileCount, err := scanStorageUsage(h.storageRoot)
+
+	snapshot, err := h.applyStorageDelta(ctx, delta)
 	if err != nil {
 		h.logger.Printf("发布 storage.changed 失败: %v", err)
 		return
-	}
-
-	var rareVideos int64
-	if h.videos != nil {
-		rareVideos, err = h.videos.CountByState(ctx, "OUT_OF_PRINT")
-		if err != nil {
-			h.logger.Printf("统计绝版视频失败: %v", err)
-			return
-		}
 	}
 
 	at := h.now()
@@ -682,16 +709,109 @@ func (h *DefaultHandler) publishStorageChanged(ctx context.Context) {
 		At:   at,
 		Payload: map[string]any{
 			"root_dir":       h.storageRoot,
-			"used_bytes":     usedBytes,
+			"used_bytes":     snapshot.usedBytes,
 			"max_bytes":      h.storageMax,
 			"safe_bytes":     h.storageSafe,
-			"usage_percent":  percent(usedBytes, h.storageMax),
-			"file_count":     fileCount,
-			"rare_videos":    rareVideos,
+			"usage_percent":  percent(snapshot.usedBytes, h.storageMax),
+			"file_count":     snapshot.fileCount,
+			"rare_videos":    snapshot.rareVideos,
 			"cleanup_rule":   "绝版优先 -> 粉丝量 -> 播放量 -> 收藏量",
 			"hottest_bucket": "-",
 		},
 	})
+}
+
+func (h *DefaultHandler) applyStorageDelta(ctx context.Context, delta storageDelta) (storageSnapshot, error) {
+	h.storageMu.Lock()
+	defer h.storageMu.Unlock()
+
+	if !h.storageSnapshot.initialized {
+		usedBytes, fileCount, err := scanStorageUsageFn(h.storageRoot)
+		if err != nil {
+			return storageSnapshot{}, err
+		}
+		rareVideos, err := h.countRareVideos(ctx)
+		if err != nil {
+			return storageSnapshot{}, err
+		}
+		h.storageSnapshot = storageSnapshot{
+			initialized: true,
+			usedBytes:   usedBytes,
+			fileCount:   fileCount,
+			rareVideos:  rareVideos,
+		}
+	}
+
+	h.storageSnapshot.usedBytes += delta.usedBytes
+	h.storageSnapshot.fileCount += delta.fileCount
+	h.storageSnapshot.rareVideos += delta.rareVideos
+	if h.storageSnapshot.usedBytes < 0 {
+		h.storageSnapshot.usedBytes = 0
+	}
+	if h.storageSnapshot.fileCount < 0 {
+		h.storageSnapshot.fileCount = 0
+	}
+	if h.storageSnapshot.rareVideos < 0 {
+		h.storageSnapshot.rareVideos = 0
+	}
+	return h.storageSnapshot, nil
+}
+
+func (h *DefaultHandler) ensureStorageSnapshotInitialized(ctx context.Context) error {
+	if h.publisher == nil || h.storageRoot == "" {
+		return nil
+	}
+
+	h.storageMu.Lock()
+	initialized := h.storageSnapshot.initialized
+	h.storageMu.Unlock()
+	if initialized {
+		return nil
+	}
+
+	usedBytes, fileCount, err := scanStorageUsageFn(h.storageRoot)
+	if err != nil {
+		return err
+	}
+	h.seedStorageSnapshot(ctx, usedBytes, fileCount)
+	return nil
+}
+
+func (h *DefaultHandler) seedStorageSnapshot(ctx context.Context, usedBytes, fileCount int64) {
+	if h.publisher == nil || h.storageRoot == "" {
+		return
+	}
+
+	h.storageMu.Lock()
+	if h.storageSnapshot.initialized {
+		h.storageMu.Unlock()
+		return
+	}
+	h.storageMu.Unlock()
+
+	rareVideos, err := h.countRareVideos(ctx)
+	if err != nil {
+		h.logger.Printf("统计绝版视频失败: %v", err)
+		return
+	}
+
+	h.storageMu.Lock()
+	if !h.storageSnapshot.initialized {
+		h.storageSnapshot = storageSnapshot{
+			initialized: true,
+			usedBytes:   usedBytes,
+			fileCount:   fileCount,
+			rareVideos:  rareVideos,
+		}
+	}
+	h.storageMu.Unlock()
+}
+
+func (h *DefaultHandler) countRareVideos(ctx context.Context) (int64, error) {
+	if h.videos == nil {
+		return 0, nil
+	}
+	return h.videos.CountByState(ctx, "OUT_OF_PRINT")
 }
 
 func shouldPublishVideoChanged(prev, next string) bool {

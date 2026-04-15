@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"fetch-bilibili/internal/live"
@@ -17,22 +18,44 @@ type stubRepo struct {
 	deletedID int64
 	deleted   int64
 	err       error
-	count     int
+	count     int64
 	list      []repo.Creator
 	listErr   error
 	statuses  map[int64]string
 	statusErr error
 	creators  map[int64]repo.Creator
+
+	storeOnUpsert           bool
+	upsertKeepsExistingName bool
 }
 
 func (s *stubRepo) Upsert(ctx context.Context, c repo.Creator) (int64, error) {
 	s.last = c
-	s.count++
+	atomic.AddInt64(&s.count, 1)
 	if s.err != nil {
 		return 0, s.err
 	}
 	if s.id == 0 {
 		s.id = 1
+	}
+	if s.storeOnUpsert {
+		if s.creators == nil {
+			s.creators = make(map[int64]repo.Creator)
+		}
+		next := c
+		next.ID = s.id
+		if s.upsertKeepsExistingName && next.Name == "" {
+			if current, ok := s.creators[s.id]; ok {
+				next.Name = current.Name
+			}
+		}
+		if next.Platform == "" {
+			next.Platform = "bilibili"
+		}
+		if next.Status == "" {
+			next.Status = "active"
+		}
+		s.creators[s.id] = next
 	}
 	return s.id, nil
 }
@@ -436,8 +459,8 @@ func TestServiceUpsertFromFileSkipsRemovedCreator(t *testing.T) {
 	if !skipped {
 		t.Fatalf("expected skipped")
 	}
-	if creator.ID != 7 || repoStub.count != 0 {
-		t.Fatalf("expected removed creator kept untouched, creator=%+v count=%d", creator, repoStub.count)
+	if creator.ID != 7 || atomic.LoadInt64(&repoStub.count) != 0 {
+		t.Fatalf("expected removed creator kept untouched, creator=%+v count=%d", creator, atomic.LoadInt64(&repoStub.count))
 	}
 }
 
@@ -593,5 +616,59 @@ func TestServicePauseMissingActivePublishesCreatorEvent(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected paused creator.changed for id=2, got %+v", publisher.events)
+	}
+}
+
+func TestServiceUpsertPublishesCreatorEventWithPersistedNameSnapshot(t *testing.T) {
+	repoStub := &stubRepo{
+		id:                      7,
+		storeOnUpsert:           true,
+		upsertKeepsExistingName: true,
+		creators: map[int64]repo.Creator{
+			7: {ID: 7, UID: "777", Name: "persisted-name", Platform: "bilibili", Status: "active"},
+		},
+	}
+	publisher := &stubCreatorEventPublisher{}
+	svc := NewService(repoStub, nil, nil)
+	svc.SetPublisher(publisher)
+
+	if _, err := svc.Upsert(context.Background(), Entry{UID: "777"}); err != nil {
+		t.Fatalf("upsert error: %v", err)
+	}
+
+	evt := mustFindCreatorChangedEvent(t, publisher.events)
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	if got := payload["name"]; got != "persisted-name" {
+		t.Fatalf("expected persisted name in event, got %v", got)
+	}
+}
+
+func TestServiceUpsertFromFilePublishesCreatorEventWithPersistedNameSnapshot(t *testing.T) {
+	repoStub := &stubRepo{
+		id:                      9,
+		storeOnUpsert:           true,
+		upsertKeepsExistingName: true,
+		creators: map[int64]repo.Creator{
+			9: {ID: 9, UID: "999", Name: "kept-name", Platform: "bilibili", Status: "active"},
+		},
+	}
+	publisher := &stubCreatorEventPublisher{}
+	svc := NewService(repoStub, nil, nil)
+	svc.SetPublisher(publisher)
+
+	if _, _, err := svc.upsertFromFile(context.Background(), Entry{UID: "999"}); err != nil {
+		t.Fatalf("upsert from file error: %v", err)
+	}
+
+	evt := mustFindCreatorChangedEvent(t, publisher.events)
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	if got := payload["name"]; got != "kept-name" {
+		t.Fatalf("expected persisted name in event, got %v", got)
 	}
 }
