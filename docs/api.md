@@ -380,7 +380,44 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
 }
 ```
 
-## 7. 错误响应
+## 7. 实时事件流
+
+### 7.1 `GET /events/stream`
+- 用途：为前端驾驶舱提供实时增量事件
+- 协议：SSE（`text/event-stream`）
+- 建议接入方式：
+  - 首屏先请求 `GET /creators`、`GET /jobs`、`GET /videos`、`GET /system/status`、`GET /storage/stats`
+  - 再建立 `EventSource`
+  - 断线重连成功后补一次快照，修正断线期间的状态漂移
+- 服务端行为：
+  - 建连后立即发送 `hello`
+  - 默认每 15 秒发送一次 `heartbeat`
+  - 状态变化时按事件类型推送 JSON 数据
+
+- 当前事件类型：
+  - `hello`
+  - `heartbeat`
+  - `job.changed`
+  - `video.changed`
+  - `creator.changed`
+  - `storage.changed`
+  - `system.changed`
+
+- SSE 帧示例：
+
+```text
+event: job.changed
+data: {"job":{"id":11,"type":"fetch","status":"running","updated_at":"2026-04-15T08:00:00Z"}}
+```
+
+- 说明：
+  - `job.changed`：任务状态变化，通常包含 `job`
+  - `video.changed`：视频状态或元数据变化，通常包含 `video`
+  - `creator.changed`：博主新增、暂停、启用、停止追踪、名称更新
+  - `storage.changed`：存储统计变化，通常包含 `storage`
+  - `system.changed`：系统运行态增量，当前主要用于推送 `cookie` 和 `risk`；完整系统状态仍以 `GET /system/status` 为准
+
+## 8. 错误响应
 
 接口错误统一返回：
 
@@ -397,7 +434,7 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
 - `500`：服务内部错误
 - `503`：服务依赖尚未就绪
 
-## 8. 说明
+## 9. 说明
 
 - 当前前端驾驶舱已真实对接：
   - `GET /creators`
@@ -407,6 +444,7 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
   - `GET /videos`
   - `GET /system/status`
   - `GET /storage/stats`
+  - `GET /events/stream`
 - 当前后端已额外实现：
   - `PATCH /creators/{id}`
   - `GET /videos/{id}`

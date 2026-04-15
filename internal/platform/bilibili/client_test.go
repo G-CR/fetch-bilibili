@@ -16,7 +16,27 @@ import (
 	"time"
 
 	"fetch-bilibili/internal/config"
+	"fetch-bilibili/internal/live"
 )
+
+type stubSystemEventPublisher struct {
+	events []live.Event
+}
+
+func (s *stubSystemEventPublisher) Publish(evt live.Event) {
+	s.events = append(s.events, evt)
+}
+
+func mustFindLastSystemChangedEvent(t *testing.T, events []live.Event) live.Event {
+	t.Helper()
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == "system.changed" {
+			return events[i]
+		}
+	}
+	t.Fatalf("expected system.changed event, got %+v", events)
+	return live.Event{}
+}
 
 func newIPv4TestServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
@@ -1068,6 +1088,39 @@ func TestRuntimeStatusTracksCookieSourceAndReload(t *testing.T) {
 	}
 }
 
+func TestReloadAuthPublishesSystemChangedWhenStateChanges(t *testing.T) {
+	client := New(config.BilibiliConfig{Cookie: "SESSDATA=inline-token"}, nil)
+	publisher := &stubSystemEventPublisher{}
+	client.SetPublisher(publisher)
+
+	if _, err := client.ReloadAuth(); err != nil {
+		t.Fatalf("ReloadAuth error: %v", err)
+	}
+	if len(publisher.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(publisher.events))
+	}
+
+	evt := mustFindLastSystemChangedEvent(t, publisher.events)
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	cookie, ok := payload["cookie"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected cookie payload, got %T", payload["cookie"])
+	}
+	if got := cookie["last_reload_result"]; got != "no_change" {
+		t.Fatalf("expected last_reload_result=no_change, got %v", got)
+	}
+
+	if _, err := client.ReloadAuth(); err != nil {
+		t.Fatalf("ReloadAuth second error: %v", err)
+	}
+	if len(publisher.events) != 1 {
+		t.Fatalf("expected no duplicate event for same reload state, got %d", len(publisher.events))
+	}
+}
+
 func TestRuntimeStatusTracksCheckAndRisk(t *testing.T) {
 	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := navResp{Code: -412, Message: "risk"}
@@ -1098,5 +1151,127 @@ func TestRuntimeStatusTracksCheckAndRisk(t *testing.T) {
 	}
 	if status.LastRiskReason == "" {
 		t.Fatalf("expected last risk reason")
+	}
+}
+
+func TestCheckAuthPublishesSystemChangedForValidInvalidAndError(t *testing.T) {
+	tests := []struct {
+		name        string
+		handler     http.Handler
+		wantStatus  string
+		wantIsLogin bool
+		wantMid     int64
+	}{
+		{
+			name: "valid",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				resp := navResp{Code: 0}
+				resp.Data.IsLogin = true
+				resp.Data.Mid = 12
+				resp.Data.Uname = "tester"
+				_ = json.NewEncoder(w).Encode(resp)
+			}),
+			wantStatus:  "valid",
+			wantIsLogin: true,
+			wantMid:     12,
+		},
+		{
+			name: "invalid",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				resp := navResp{Code: 0}
+				resp.Data.IsLogin = false
+				_ = json.NewEncoder(w).Encode(resp)
+			}),
+			wantStatus:  "invalid",
+			wantIsLogin: false,
+			wantMid:     0,
+		},
+		{
+			name: "error",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				resp := navResp{Code: -101, Message: "not login"}
+				_ = json.NewEncoder(w).Encode(resp)
+			}),
+			wantStatus:  "error",
+			wantIsLogin: false,
+			wantMid:     0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newIPv4TestServer(t, tt.handler)
+			defer server.Close()
+
+			client := New(config.BilibiliConfig{Cookie: "SESSDATA=inline-token", RiskBackoffBase: 10 * time.Millisecond, RiskBackoffJitter: 0}, nil, WithBaseURL(server.URL))
+			publisher := &stubSystemEventPublisher{}
+			client.SetPublisher(publisher)
+
+			_, _ = client.CheckAuth(context.Background())
+			if len(publisher.events) == 0 {
+				t.Fatalf("expected system.changed event")
+			}
+
+			evt := mustFindLastSystemChangedEvent(t, publisher.events)
+			payload, ok := evt.Payload.(map[string]any)
+			if !ok {
+				t.Fatalf("expected map payload, got %T", evt.Payload)
+			}
+			cookie, ok := payload["cookie"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected cookie payload, got %T", payload["cookie"])
+			}
+			if got := cookie["status"]; got != tt.wantStatus {
+				t.Fatalf("expected cookie status=%s, got %v", tt.wantStatus, got)
+			}
+			if got := cookie["is_login"]; got != tt.wantIsLogin {
+				t.Fatalf("expected is_login=%v, got %v", tt.wantIsLogin, got)
+			}
+			if got := cookie["mid"]; got != tt.wantMid {
+				t.Fatalf("expected mid=%d, got %v", tt.wantMid, got)
+			}
+		})
+	}
+}
+
+func TestRiskStatePublishesSystemChangedOnHitAndRecovery(t *testing.T) {
+	client := New(config.BilibiliConfig{RiskBackoffBase: 10 * time.Millisecond, RiskBackoffJitter: 0}, nil)
+	publisher := &stubSystemEventPublisher{}
+	client.SetPublisher(publisher)
+
+	client.markRiskReason("hit")
+	if len(publisher.events) != 1 {
+		t.Fatalf("expected 1 event after risk hit, got %d", len(publisher.events))
+	}
+
+	hit := mustFindLastSystemChangedEvent(t, publisher.events)
+	hitPayload, ok := hit.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", hit.Payload)
+	}
+	risk, ok := hitPayload["risk"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected risk payload, got %T", hitPayload["risk"])
+	}
+	if got := risk["active"]; got != true {
+		t.Fatalf("expected risk active=true, got %v", got)
+	}
+
+	client.resetRisk()
+	if len(publisher.events) != 2 {
+		t.Fatalf("expected 2 events after recovery, got %d", len(publisher.events))
+	}
+
+	reset := mustFindLastSystemChangedEvent(t, publisher.events)
+	resetPayload, ok := reset.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", reset.Payload)
+	}
+	risk, ok = resetPayload["risk"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected risk payload, got %T", resetPayload["risk"])
+	}
+	if got := risk["active"]; got != false {
+		t.Fatalf("expected risk active=false, got %v", got)
 	}
 }

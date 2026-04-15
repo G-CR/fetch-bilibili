@@ -1,4 +1,5 @@
 const DEFAULT_TIMEOUT = 5000;
+const DEFAULT_STREAM_RECONNECT_DELAY = 1000;
 
 async function request(baseURL, path, options = {}) {
   const controller = new AbortController();
@@ -117,6 +118,113 @@ export async function loadDashboardSnapshot(baseURL) {
   };
 }
 
+export function createDashboardEventStream(baseURL, handlers = {}, options = {}) {
+  if (typeof EventSource === "undefined") {
+    handlers.onError?.(new Error("当前环境不支持 EventSource"));
+    return { close() {} };
+  }
+
+  const root = String(baseURL || "").replace(/\/$/, "");
+  const url = `${root}/events/stream`;
+  const reconnectDelay = Math.max(Number(options.reconnectDelayMs) || DEFAULT_STREAM_RECONNECT_DELAY, 200);
+  const eventTypes = [
+    "job.changed",
+    "video.changed",
+    "creator.changed",
+    "storage.changed",
+    "system.changed",
+    "hello",
+    "heartbeat"
+  ];
+  const subscriptions = new Map();
+  let closed = false;
+  let reconnectTimer = 0;
+  let currentSource = null;
+
+  const clearReconnectTimer = () => {
+    if (reconnectTimer) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = 0;
+    }
+  };
+
+  const detachSource = (source) => {
+    if (!source) {
+      return;
+    }
+    const unsubs = subscriptions.get(source) || [];
+    unsubs.forEach((fn) => fn());
+    subscriptions.delete(source);
+    source.onopen = null;
+    source.onerror = null;
+    source.close();
+    if (currentSource === source) {
+      currentSource = null;
+    }
+  };
+
+  const scheduleReconnect = () => {
+    if (closed || reconnectTimer) {
+      return;
+    }
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = 0;
+      connect();
+    }, reconnectDelay);
+  };
+
+  const connect = () => {
+    if (closed) {
+      return;
+    }
+
+    const source = new EventSource(url);
+    currentSource = source;
+
+    source.onopen = () => {
+      if (closed || currentSource !== source) {
+        return;
+      }
+      clearReconnectTimer();
+      handlers.onOpen?.();
+    };
+
+    source.onerror = (error) => {
+      if (closed || currentSource !== source) {
+        return;
+      }
+      handlers.onError?.(error);
+      detachSource(source);
+      scheduleReconnect();
+    };
+
+    const unsubs = eventTypes.map((type) => {
+      const listener = (message) => {
+        if (closed || currentSource !== source) {
+          return;
+        }
+        handlers.onEvent?.({
+          type,
+          data: parseEventData(message?.data)
+        });
+      };
+      source.addEventListener(type, listener);
+      return () => source.removeEventListener(type, listener);
+    });
+    subscriptions.set(source, unsubs);
+  };
+
+  connect();
+
+  return {
+    close() {
+      closed = true;
+      clearReconnectTimer();
+      detachSource(currentSource);
+    }
+  };
+}
+
 export function formatRequestError(error) {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -135,4 +243,15 @@ function buildQuery(params = {}) {
 
   const query = search.toString();
   return query ? `?${query}` : "";
+}
+
+function parseEventData(raw) {
+  if (!raw) {
+    return {};
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (_error) {
+    return {};
+  }
 }

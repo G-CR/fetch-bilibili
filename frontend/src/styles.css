@@ -230,6 +230,57 @@ button {
   line-height: 1.65;
 }
 
+.live-connection {
+  margin-top: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.live-connection-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--warning);
+  box-shadow: 0 0 14px currentColor;
+}
+
+.live-connection--live {
+  border-color: rgba(92, 211, 154, 0.26);
+  color: var(--success);
+}
+
+.live-connection--live .live-connection-dot {
+  background: var(--success);
+}
+
+.live-connection--reconnecting,
+.live-connection--connecting {
+  border-color: rgba(246, 184, 95, 0.26);
+  color: var(--warning);
+}
+
+.live-connection--reconnecting .live-connection-dot,
+.live-connection--connecting .live-connection-dot {
+  background: var(--warning);
+}
+
+.live-connection--offline {
+  border-color: rgba(255, 111, 134, 0.26);
+  color: var(--danger);
+}
+
+.live-connection--offline .live-connection-dot {
+  background: var(--danger);
+}
+
 .command-actions,
 .action-row,
 .settings-group,

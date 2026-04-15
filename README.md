@@ -195,12 +195,18 @@ Content-Type: application/json
 - `GET /system/status`
 - `GET /storage/stats`
 - `GET /system/config`
+- `GET /events/stream`
 
 其中 `GET /system/status` 现已补充：
 - Cookie 来源（配置 / Cookie 文件 / SESSDATA 文件）
 - 最近一次认证检查与配置刷新结果
 - 风控退避剩余秒数、最近命中时间与原因
 - 认证监控是否启用
+
+其中 `GET /events/stream` 用于驾驶舱实时事件流：
+- 建连后立即返回 `hello`
+- 后续增量推送 `job.changed`、`video.changed`、`creator.changed`、`storage.changed`、`system.changed`
+- 前端断线后会自动重连，重连成功后自动补一次快照
 
 ### 系统配置编辑接口
 - `GET /system/config`：读取当前运行配置文件内容与路径
@@ -237,6 +243,11 @@ npm run dev
 - 默认访问地址通常为 `http://localhost:5173`
 - 后端地址默认填写 `http://localhost:8080`
 - 当前仅保留 `API 模式`，会自动同步真实后端数据
+- 页面会先加载一次快照，再连接 `/events/stream` 接收增量事件
+- 顶部会展示实时连接状态：连接中 / 实时同步中 / 重连中 / 连接中断
+- SSE 正常时，任务、视频、博主、存储和系统状态会自动更新
+- 仍保留低频对账：`GET /system/status` 每 30 秒一次，整页快照（含 `storage/stats`）每 60 秒一次
+- SSE 重连成功后会自动补一次快照，无需手动刷新
 - 当前已接入：
   - 读取博主列表
   - 添加博主

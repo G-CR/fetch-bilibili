@@ -106,6 +106,54 @@ test("可以触发任务并查看任务详情", async ({ page }) => {
   await expect(page.getByTestId("job-detail-panel")).toContainText("Payload");
 });
 
+test("点击立即拉取后任务状态会自动推进", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("sync-button").click();
+  await expect(page.getByTestId("live-connection-status")).toContainText("实时同步中");
+
+  await page.getByTestId("quick-action-fetch").click();
+
+  const latestFetchJob = page.getByTestId("job-list").getByRole("button").first();
+  await expect(latestFetchJob).toContainText("拉取最新视频");
+  await expect(latestFetchJob).toContainText("待执行");
+  await expect(latestFetchJob).toContainText("执行中", { timeout: 5000 });
+  await expect(latestFetchJob).toContainText("已完成", { timeout: 5000 });
+});
+
+test("SSE 断线后页面会提示重连中", async ({ page, request }) => {
+  await page.goto("/");
+  await page.getByTestId("sync-button").click();
+
+  const connection = page.getByTestId("live-connection-status");
+  await expect(connection).toContainText("实时同步中");
+
+  await request.post(`${apiBase}/__mock/events/disconnect`);
+
+  await expect(connection).toContainText("重连中", { timeout: 5000 });
+});
+
+test("SSE 恢复后会自动补快照并恢复实时同步", async ({ page, request }) => {
+  await page.goto("/");
+  await page.getByTestId("sync-button").click();
+
+  const connection = page.getByTestId("live-connection-status");
+  await expect(connection).toContainText("实时同步中");
+
+  await page.getByTestId("quick-action-fetch").click();
+  const latestFetchJob = page.getByTestId("job-list").getByRole("button").first();
+  await expect(latestFetchJob).toContainText("拉取最新视频");
+  await expect(latestFetchJob).toContainText("待执行");
+
+  await request.post(`${apiBase}/__mock/events/disconnect`);
+  await expect(connection).toContainText("重连中", { timeout: 5000 });
+
+  await page.waitForTimeout(1500);
+  await request.post(`${apiBase}/__mock/events/recover`);
+
+  await expect(connection).toContainText("实时同步中", { timeout: 5000 });
+  await expect(latestFetchJob).toContainText("已完成", { timeout: 5000 });
+});
+
 async function resetMockState(request) {
   let lastError = null;
 

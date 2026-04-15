@@ -1,9 +1,17 @@
 import http from "node:http";
 
 const port = Number(process.env.E2E_API_PORT || 43180);
+const sseRetryMs = 250;
+const streamClients = new Set();
+const scheduledTimers = new Set();
 
-const initialState = () => ({
-  configText: `server:
+let state = initialState();
+let streamAvailable = true;
+let nextEventID = 1;
+
+function initialState() {
+  return {
+    configText: `server:
   http_addr: ":8080"
   shutdown_timeout: 10s
 storage:
@@ -15,126 +23,125 @@ scheduler:
   cleanup_interval: 24h
   stable_days: 30
 `,
-  creators: [
-    { id: 101, uid: "123456", name: "Mock 收藏向频道", platform: "bilibili", status: "active" },
-    { id: 102, uid: "654321", name: "Mock 科技区 UP", platform: "bilibili", status: "paused" }
-  ],
-  jobs: [
-    {
-      id: 201,
-      type: "check",
-      status: "failed",
-      payload: { video_id: 901 },
-      error_msg: "Mock 视频接口返回 412",
-      created_at: "2026-04-13T12:00:00Z",
-      updated_at: "2026-04-13T12:03:00Z",
-      finished_at: "2026-04-13T12:03:00Z"
+    creators: [
+      { id: 101, uid: "123456", name: "Mock 收藏向频道", platform: "bilibili", status: "active" },
+      { id: 102, uid: "654321", name: "Mock 科技区 UP", platform: "bilibili", status: "paused" }
+    ],
+    jobs: [
+      {
+        id: 201,
+        type: "check",
+        status: "failed",
+        payload: { video_id: 901 },
+        error_msg: "Mock 视频接口返回 412",
+        created_at: "2026-04-13T12:00:00Z",
+        updated_at: "2026-04-13T12:03:00Z",
+        finished_at: "2026-04-13T12:03:00Z"
+      },
+      {
+        id: 202,
+        type: "download",
+        status: "running",
+        payload: { video_id: 902 },
+        created_at: "2026-04-13T12:05:00Z",
+        updated_at: "2026-04-13T12:06:00Z",
+        started_at: "2026-04-13T12:06:00Z"
+      }
+    ],
+    videos: [
+      {
+        id: 901,
+        platform: "bilibili",
+        video_id: "BV1mock901",
+        creator_id: 101,
+        title: "Mock 绝版视频",
+        description: "",
+        publish_time: "2026-04-10T09:00:00Z",
+        duration: 360,
+        cover_url: "",
+        view_count: 120,
+        favorite_count: 20,
+        state: "OUT_OF_PRINT",
+        out_of_print_at: "2026-04-13T08:00:00Z",
+        stable_at: "",
+        last_check_at: "2026-04-13T12:00:00Z"
+      },
+      {
+        id: 902,
+        platform: "bilibili",
+        video_id: "BV1mock902",
+        creator_id: 101,
+        title: "Mock 普通视频",
+        description: "",
+        publish_time: "2026-04-11T09:00:00Z",
+        duration: 180,
+        cover_url: "",
+        view_count: 80,
+        favorite_count: 8,
+        state: "DOWNLOADED",
+        out_of_print_at: "",
+        stable_at: "",
+        last_check_at: "2026-04-13T11:00:00Z"
+      }
+    ],
+    system: {
+      health: "online",
+      mysql_ok: true,
+      auth_enabled: true,
+      active_jobs: 2,
+      risk_level: "中",
+      risk: {
+        level: "中",
+        active: false,
+        backoff_seconds: 0,
+        backoff_until: "",
+        last_hit_at: "2026-04-13T11:58:00Z",
+        last_reason: "/x/web-interface/view 返回风控码 -412"
+      },
+      last_job_at: "2026-04-13T12:06:00Z",
+      storage_root: "/data/archive",
+      cookie: {
+        configured: true,
+        status: "valid",
+        uname: "mock_user",
+        source: "config",
+        last_check_at: "2026-04-13T11:59:00Z",
+        last_reload_at: "2026-04-13T11:50:00Z",
+        last_check_result: "valid",
+        last_reload_result: "success",
+        last_error: ""
+      },
+      overview: {
+        active_creators: 1,
+        pending_jobs: 2,
+        rare_videos: 1
+      },
+      limits: {
+        global_qps: 2,
+        per_creator_qps: 1,
+        download_concurrency: 4,
+        check_concurrency: 8
+      },
+      scheduler: {
+        fetch_interval: "45m0s",
+        check_interval: "24h0m0s",
+        cleanup_interval: "24h0m0s",
+        check_stable_days: 30
+      }
     },
-    {
-      id: 202,
-      type: "download",
-      status: "running",
-      payload: { video_id: 902 },
-      created_at: "2026-04-13T12:05:00Z",
-      updated_at: "2026-04-13T12:06:00Z",
-      started_at: "2026-04-13T12:06:00Z"
+    storage: {
+      root_dir: "/data/archive",
+      used_bytes: 1717986918,
+      max_bytes: 2147483648,
+      safe_bytes: 1610612736,
+      usage_percent: 80,
+      file_count: 22,
+      hottest_bucket: "bilibili",
+      rare_videos: 1,
+      cleanup_rule: "绝版优先 -> 粉丝量 -> 播放量 -> 收藏量"
     }
-  ],
-  videos: [
-    {
-      id: 901,
-      platform: "bilibili",
-      video_id: "BV1mock901",
-      creator_id: 101,
-      title: "Mock 绝版视频",
-      description: "",
-      publish_time: "2026-04-10T09:00:00Z",
-      duration: 360,
-      cover_url: "",
-      view_count: 120,
-      favorite_count: 20,
-      state: "OUT_OF_PRINT",
-      out_of_print_at: "2026-04-13T08:00:00Z",
-      stable_at: "",
-      last_check_at: "2026-04-13T12:00:00Z"
-    },
-    {
-      id: 902,
-      platform: "bilibili",
-      video_id: "BV1mock902",
-      creator_id: 101,
-      title: "Mock 普通视频",
-      description: "",
-      publish_time: "2026-04-11T09:00:00Z",
-      duration: 180,
-      cover_url: "",
-      view_count: 80,
-      favorite_count: 8,
-      state: "DOWNLOADED",
-      out_of_print_at: "",
-      stable_at: "",
-      last_check_at: "2026-04-13T11:00:00Z"
-    }
-  ],
-  system: {
-    health: "online",
-    mysql_ok: true,
-    auth_enabled: true,
-    active_jobs: 2,
-    risk_level: "中",
-    risk: {
-      level: "中",
-      active: false,
-      backoff_seconds: 0,
-      backoff_until: "",
-      last_hit_at: "2026-04-13T11:58:00Z",
-      last_reason: "/x/web-interface/view 返回风控码 -412"
-    },
-    last_job_at: "2026-04-13T12:06:00Z",
-    storage_root: "/data/archive",
-    cookie: {
-      configured: true,
-      status: "valid",
-      uname: "mock_user",
-      source: "cookie_file",
-      last_check_at: "2026-04-13T11:59:00Z",
-      last_reload_at: "2026-04-13T11:50:00Z",
-      last_check_result: "valid",
-      last_reload_result: "success",
-      last_error: ""
-    },
-    overview: {
-      active_creators: 1,
-      pending_jobs: 2,
-      rare_videos: 1
-    },
-    limits: {
-      global_qps: 2,
-      per_creator_qps: 1,
-      download_concurrency: 4,
-      check_concurrency: 8
-    },
-    scheduler: {
-      fetch_interval: "45m0s",
-      check_interval: "24h0m0s",
-      cleanup_interval: "24h0m0s",
-      check_stable_days: 30
-    }
-  },
-  storage: {
-    root_dir: "/data/archive",
-    used_bytes: 1717986918,
-    max_bytes: 2147483648,
-    safe_bytes: 1610612736,
-    usage_percent: 80,
-    file_count: 22,
-    hottest_bucket: "bilibili",
-    rare_videos: 1,
-    cleanup_rule: "绝版优先 -> 粉丝量 -> 播放量 -> 收藏量"
-  }
-});
-
-let state = initialState();
+  };
+}
 
 function sendJSON(res, status, payload) {
   res.writeHead(status, {
@@ -144,6 +151,63 @@ function sendJSON(res, status, payload) {
     "Access-Control-Allow-Headers": "Content-Type"
   });
   res.end(JSON.stringify(payload));
+}
+
+function sendEvent(res, type, payload) {
+  res.write(`id: ${nextEventID}\n`);
+  res.write(`event: ${type}\n`);
+  res.write(`data: ${JSON.stringify(payload || {})}\n\n`);
+  nextEventID += 1;
+}
+
+function broadcastEvent(type, payload) {
+  for (const client of [...streamClients]) {
+    try {
+      sendEvent(client, type, payload);
+    } catch (_error) {
+      closeStreamClient(client);
+    }
+  }
+}
+
+function closeStreamClient(client) {
+  if (!streamClients.has(client)) {
+    return;
+  }
+  streamClients.delete(client);
+  try {
+    client.end();
+  } catch (_error) {
+    // ignore
+  }
+}
+
+function closeAllStreamClients() {
+  for (const client of [...streamClients]) {
+    closeStreamClient(client);
+  }
+}
+
+function clearScheduledTimers() {
+  for (const timer of scheduledTimers) {
+    clearTimeout(timer);
+  }
+  scheduledTimers.clear();
+}
+
+function schedule(delayMs, callback) {
+  const timer = setTimeout(() => {
+    scheduledTimers.delete(timer);
+    callback();
+  }, delayMs);
+  scheduledTimers.add(timer);
+}
+
+function resetRuntimeState() {
+  clearScheduledTimers();
+  closeAllStreamClients();
+  streamAvailable = true;
+  nextEventID = 1;
 }
 
 function readBody(req) {
@@ -171,6 +235,98 @@ function nextID(items) {
   return items.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0) + 1;
 }
 
+function recalcJobCounters() {
+  const pendingJobs = state.jobs.filter((item) => item.status === "queued" || item.status === "running").length;
+  state.system.active_jobs = pendingJobs;
+  state.system.overview.pending_jobs = pendingJobs;
+}
+
+function buildJobEventPayload(job, patch) {
+  const payload = {
+    id: job.id
+  };
+
+  if (Object.prototype.hasOwnProperty.call(patch, "type")) {
+    payload.type = String(job.type || "");
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "status")) {
+    payload.status = String(job.status || "");
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "payload")) {
+    payload.payload = job.payload || {};
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "error_msg")) {
+    payload.error_msg = String(job.error_msg || "");
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "created_at")) {
+    payload.created_at = String(job.created_at || "");
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "updated_at")) {
+    payload.updated_at = String(job.updated_at || "");
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "started_at")) {
+    payload.started_at = String(job.started_at || "");
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "finished_at")) {
+    payload.finished_at = String(job.finished_at || "");
+  }
+
+  return payload;
+}
+
+function updateJob(id, patch) {
+  let updatedJob = null;
+  state.jobs = state.jobs.map((job) => {
+    if (job.id !== id) {
+      return job;
+    }
+    updatedJob = {
+      ...job,
+      ...patch
+    };
+    return updatedJob;
+  });
+
+  if (!updatedJob) {
+    return null;
+  }
+
+  recalcJobCounters();
+  state.system.last_job_at = String(updatedJob.updated_at || updatedJob.created_at || state.system.last_job_at || "");
+  broadcastEvent("job.changed", { job: buildJobEventPayload(updatedJob, patch) });
+  broadcastEvent("system.changed", {
+    system: {
+      active_jobs: state.system.active_jobs,
+      last_job_at: state.system.last_job_at,
+      overview: {
+        pending_jobs: state.system.overview.pending_jobs
+      }
+    }
+  });
+  return updatedJob;
+}
+
+function scheduleJobLifecycle(jobID) {
+  schedule(500, () => {
+    const runningAt = new Date().toISOString();
+    updateJob(jobID, {
+      status: "running",
+      started_at: runningAt,
+      updated_at: runningAt
+    });
+  });
+
+  schedule(1200, () => {
+    const finishedAt = new Date().toISOString();
+    updateJob(jobID, {
+      status: "success",
+      finished_at: finishedAt,
+      updated_at: finishedAt,
+      error_msg: ""
+    });
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   if (!req.url) {
     sendJSON(res, 404, { error: "not found" });
@@ -188,9 +344,53 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && req.url === "/events/stream") {
+      if (!streamAvailable) {
+        res.writeHead(503, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-cache",
+          "Access-Control-Allow-Origin": "*"
+        });
+        res.end("stream unavailable");
+        return;
+      }
+
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "Access-Control-Allow-Origin": "*"
+      });
+      res.write(`retry: ${sseRetryMs}\n\n`);
+      sendEvent(res, "hello", {
+        server_time: new Date().toISOString(),
+        stream: "mock-api"
+      });
+      streamClients.add(res);
+
+      req.on("close", () => {
+        streamClients.delete(res);
+      });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/__reset") {
+      resetRuntimeState();
       state = initialState();
       sendJSON(res, 200, { status: "ok" });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/__mock/events/disconnect") {
+      streamAvailable = false;
+      closeAllStreamClients();
+      sendJSON(res, 200, { status: "ok", stream: "offline" });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/__mock/events/recover") {
+      streamAvailable = true;
+      sendJSON(res, 200, { status: "ok", stream: "live" });
       return;
     }
 
@@ -210,6 +410,14 @@ const server = http.createServer(async (req, res) => {
       };
       state.creators.unshift(creator);
       state.system.overview.active_creators = state.creators.filter((item) => item.status === "active").length;
+      broadcastEvent("creator.changed", { creator });
+      broadcastEvent("system.changed", {
+        system: {
+          overview: {
+            active_creators: state.system.overview.active_creators
+          }
+        }
+      });
       sendJSON(res, 200, creator);
       return;
     }
@@ -235,6 +443,14 @@ const server = http.createServer(async (req, res) => {
       }
       state.system.overview.active_creators = state.creators.filter((item) => item.status === "active").length;
       const creator = state.creators.find((item) => item.id === id);
+      broadcastEvent("creator.changed", { creator });
+      broadcastEvent("system.changed", {
+        system: {
+          overview: {
+            active_creators: state.system.overview.active_creators
+          }
+        }
+      });
       sendJSON(res, 200, creator);
       return;
     }
@@ -256,9 +472,19 @@ const server = http.createServer(async (req, res) => {
         updated_at: now
       };
       state.jobs.unshift(job);
-      state.system.active_jobs += 1;
-      state.system.overview.pending_jobs += 1;
+      recalcJobCounters();
       state.system.last_job_at = now;
+      broadcastEvent("job.changed", { job });
+      broadcastEvent("system.changed", {
+        system: {
+          active_jobs: state.system.active_jobs,
+          last_job_at: state.system.last_job_at,
+          overview: {
+            pending_jobs: state.system.overview.pending_jobs
+          }
+        }
+      });
+      scheduleJobLifecycle(job.id);
       sendJSON(res, 200, { status: "queued", type: job.type });
       return;
     }

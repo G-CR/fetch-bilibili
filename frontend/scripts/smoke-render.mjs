@@ -30,6 +30,9 @@ try {
   if (!html.includes("系统概况")) {
     throw new Error("前端未渲染系统概况标题");
   }
+  if (!html.includes("实时连接状态")) {
+    throw new Error("前端未渲染实时连接状态");
+  }
   if (!html.includes("博主管理与追踪状态")) {
     throw new Error("前端未渲染博主管理标题");
   }

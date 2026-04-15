@@ -139,6 +139,7 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	client := bilibili.New(cfg.Bilibili, nil)
+	client.SetPublisher(broker)
 	creatorService := creator.NewService(repos.Creators, client, nil)
 	creatorService.SetPublisher(broker)
 	handler := worker.NewDefaultHandler(

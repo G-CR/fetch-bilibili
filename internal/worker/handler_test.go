@@ -82,6 +82,8 @@ type fakeVideos struct {
 	findErr      error
 	states       map[int64]string
 	lastCleanup  repo.CleanupCandidateFilter
+	onCheck      func(id int64, state string)
+	onCountState func(state string, count int64) int64
 }
 
 type updateCall struct {
@@ -224,6 +226,36 @@ func (f *fakeVideos) ListForCheck(ctx context.Context, limit int) ([]repo.Video,
 
 func (f *fakeVideos) UpdateCheckStatus(ctx context.Context, id int64, state string, outOfPrintAt *time.Time, stableAt *time.Time, lastCheckAt time.Time) error {
 	f.updates = append(f.updates, updateCall{id: id, state: state, outAt: outOfPrintAt, stable: stableAt, last: lastCheckAt})
+	if f.find != nil {
+		if video, ok := f.find[id]; ok {
+			video.State = state
+			video.LastCheckAt = lastCheckAt
+			if outOfPrintAt != nil {
+				video.OutOfPrintAt = *outOfPrintAt
+			}
+			if stableAt != nil {
+				video.StableAt = *stableAt
+			}
+			f.find[id] = video
+		}
+	}
+	for i := range f.list {
+		if f.list[i].ID != id {
+			continue
+		}
+		f.list[i].State = state
+		f.list[i].LastCheckAt = lastCheckAt
+		if outOfPrintAt != nil {
+			f.list[i].OutOfPrintAt = *outOfPrintAt
+		}
+		if stableAt != nil {
+			f.list[i].StableAt = *stableAt
+		}
+		break
+	}
+	if f.onCheck != nil {
+		f.onCheck(id, state)
+	}
 	return f.updateErr
 }
 
@@ -255,6 +287,9 @@ func (f *fakeVideos) CountByState(ctx context.Context, state string) (int64, err
 		if video.State == state {
 			count++
 		}
+	}
+	if f.onCountState != nil {
+		return f.onCountState(state, count), nil
 	}
 	return count, nil
 }
@@ -320,6 +355,18 @@ func mustFindEventByType(t *testing.T, events []live.Event, eventType string) li
 	for _, evt := range events {
 		if evt.Type == eventType {
 			return evt
+		}
+	}
+	t.Fatalf("expected %s event, got %+v", eventType, events)
+	return live.Event{}
+}
+
+func mustFindLastEventByType(t *testing.T, events []live.Event, eventType string) live.Event {
+	t.Helper()
+
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == eventType {
+			return events[i]
 		}
 	}
 	t.Fatalf("expected %s event, got %+v", eventType, events)
@@ -654,6 +701,259 @@ func TestHandleDownloadPublishesStorageEvent(t *testing.T) {
 	}
 	if got := payload["usage_percent"]; got != 10 {
 		t.Fatalf("expected usage_percent=10, got %v", got)
+	}
+}
+
+func TestStorageChangedRareVideosIncreasesAfterCheckMarksOutOfPrint(t *testing.T) {
+	dir := t.TempDir()
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {ID: 1, VideoID: "v1", Platform: "bilibili", PublishTime: time.Now(), State: "DOWNLOADED"},
+			2: {ID: 2, VideoID: "v2", Platform: "bilibili", State: "NEW"},
+			3: {ID: 3, VideoID: "v3", Platform: "bilibili", State: "NEW"},
+		},
+		list: []repo.Video{
+			{ID: 1, VideoID: "v1", State: "DOWNLOADED"},
+			{ID: 2, VideoID: "v2", State: "NEW"},
+			{ID: 3, VideoID: "v3", State: "NEW"},
+		},
+	}
+	files := &fakeVideoFiles{}
+	client := &stubClient{
+		available: map[string]bool{"v1": false},
+		download:  map[string]int64{"v2": 10, "v3": 20},
+	}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, client, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(100, 80, true)
+	h.SetPublisher(publisher)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(2)}}); err != nil {
+		t.Fatalf("seed download error: %v", err)
+	}
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCheck, Payload: map[string]any{"video_id": int64(1)}}); err != nil {
+		t.Fatalf("check error: %v", err)
+	}
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(3)}}); err != nil {
+		t.Fatalf("second download error: %v", err)
+	}
+
+	evt := mustFindLastEventByType(t, publisher.events, "storage.changed")
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	if got := payload["rare_videos"]; got != int64(1) {
+		t.Fatalf("expected rare_videos=1 after DOWNLOADED->OUT_OF_PRINT, got %v", got)
+	}
+}
+
+func TestStorageChangedRareVideosDecreasesAfterCheckMarksStable(t *testing.T) {
+	dir := t.TempDir()
+	oldPublish := time.Now().Add(-60 * 24 * time.Hour)
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {ID: 1, VideoID: "v1", Platform: "bilibili", PublishTime: oldPublish, State: "OUT_OF_PRINT"},
+			2: {ID: 2, VideoID: "v2", Platform: "bilibili", State: "NEW"},
+			3: {ID: 3, VideoID: "v3", Platform: "bilibili", State: "NEW"},
+		},
+		list: []repo.Video{
+			{ID: 1, VideoID: "v1", PublishTime: oldPublish, State: "OUT_OF_PRINT"},
+			{ID: 2, VideoID: "v2", State: "NEW"},
+			{ID: 3, VideoID: "v3", State: "NEW"},
+		},
+	}
+	files := &fakeVideoFiles{}
+	client := &stubClient{
+		available: map[string]bool{"v1": true},
+		download:  map[string]int64{"v2": 10, "v3": 20},
+	}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, client, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(100, 80, true)
+	h.SetPublisher(publisher)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(2)}}); err != nil {
+		t.Fatalf("seed download error: %v", err)
+	}
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCheck, Payload: map[string]any{"video_id": int64(1)}}); err != nil {
+		t.Fatalf("check error: %v", err)
+	}
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(3)}}); err != nil {
+		t.Fatalf("second download error: %v", err)
+	}
+
+	evt := mustFindLastEventByType(t, publisher.events, "storage.changed")
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	if got := payload["rare_videos"]; got != int64(0) {
+		t.Fatalf("expected rare_videos=0 after OUT_OF_PRINT->STABLE, got %v", got)
+	}
+}
+
+func TestStorageChangedRareVideosAvoidsDoubleCountWhenSnapshotInitializesAfterCheckMarksOutOfPrint(t *testing.T) {
+	dir := t.TempDir()
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {ID: 1, VideoID: "v1", Platform: "bilibili", State: "DOWNLOADED"},
+		},
+		list: []repo.Video{
+			{ID: 1, VideoID: "v1", State: "DOWNLOADED"},
+		},
+	}
+	client := &stubClient{available: map[string]bool{"v1": false}}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, &fakeVideoFiles{}, nil, client, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(100, 80, true)
+	h.SetPublisher(publisher)
+	videos.onCheck = func(id int64, state string) {
+		h.seedStorageSnapshot(context.Background(), 10, 1)
+	}
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCheck, Payload: map[string]any{"video_id": int64(1)}}); err != nil {
+		t.Fatalf("check error: %v", err)
+	}
+	h.publishStorageChanged(context.Background(), storageDelta{})
+
+	evt := mustFindLastEventByType(t, publisher.events, "storage.changed")
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	if got := payload["rare_videos"]; got != int64(1) {
+		t.Fatalf("expected rare_videos=1 after init race on OUT_OF_PRINT, got %v", got)
+	}
+}
+
+func TestStorageChangedRareVideosAvoidsDoubleDecrementWhenSnapshotInitializesAfterCheckMarksStable(t *testing.T) {
+	dir := t.TempDir()
+	oldPublish := time.Now().Add(-60 * 24 * time.Hour)
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {ID: 1, VideoID: "v1", Platform: "bilibili", PublishTime: oldPublish, State: "OUT_OF_PRINT"},
+			2: {ID: 2, VideoID: "v2", Platform: "bilibili", State: "OUT_OF_PRINT"},
+		},
+		list: []repo.Video{
+			{ID: 1, VideoID: "v1", PublishTime: oldPublish, State: "OUT_OF_PRINT"},
+			{ID: 2, VideoID: "v2", PublishTime: oldPublish, State: "OUT_OF_PRINT"},
+		},
+	}
+	client := &stubClient{available: map[string]bool{"v1": true}}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, &fakeVideoFiles{}, nil, client, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(100, 80, true)
+	h.SetPublisher(publisher)
+	videos.onCheck = func(id int64, state string) {
+		h.seedStorageSnapshot(context.Background(), 10, 1)
+	}
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCheck, Payload: map[string]any{"video_id": int64(1)}}); err != nil {
+		t.Fatalf("check error: %v", err)
+	}
+	h.publishStorageChanged(context.Background(), storageDelta{})
+
+	evt := mustFindLastEventByType(t, publisher.events, "storage.changed")
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	if got := payload["rare_videos"]; got != int64(1) {
+		t.Fatalf("expected rare_videos=1 after init race on STABLE, got %v", got)
+	}
+}
+
+func TestSeedStorageSnapshotPreservesDirtyRareAfterCheckMarksOutOfPrint(t *testing.T) {
+	dir := t.TempDir()
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {ID: 1, VideoID: "v1", Platform: "bilibili", State: "DOWNLOADED"},
+		},
+		list: []repo.Video{
+			{ID: 1, VideoID: "v1", State: "DOWNLOADED"},
+		},
+	}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, &fakeVideoFiles{}, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(100, 80, true)
+	h.SetPublisher(publisher)
+
+	var triggered bool
+	videos.onCountState = func(state string, count int64) int64 {
+		if state != "OUT_OF_PRINT" || triggered {
+			return count
+		}
+		triggered = true
+		videos.list[0].State = "OUT_OF_PRINT"
+		video := videos.find[1]
+		video.State = "OUT_OF_PRINT"
+		videos.find[1] = video
+		h.syncStorageRareVideosOnCheck("DOWNLOADED", "OUT_OF_PRINT")
+		return count
+	}
+
+	h.seedStorageSnapshot(context.Background(), 10, 1)
+	h.publishStorageChanged(context.Background(), storageDelta{})
+
+	evt := mustFindLastEventByType(t, publisher.events, "storage.changed")
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	if got := payload["rare_videos"]; got != int64(1) {
+		t.Fatalf("expected rare_videos=1 after preserving dirty flag, got %v", got)
+	}
+}
+
+func TestSeedStorageSnapshotPreservesDirtyRareAfterCheckMarksStable(t *testing.T) {
+	dir := t.TempDir()
+	oldPublish := time.Now().Add(-60 * 24 * time.Hour)
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {ID: 1, VideoID: "v1", Platform: "bilibili", PublishTime: oldPublish, State: "OUT_OF_PRINT"},
+			2: {ID: 2, VideoID: "v2", Platform: "bilibili", PublishTime: oldPublish, State: "OUT_OF_PRINT"},
+		},
+		list: []repo.Video{
+			{ID: 1, VideoID: "v1", PublishTime: oldPublish, State: "OUT_OF_PRINT"},
+			{ID: 2, VideoID: "v2", PublishTime: oldPublish, State: "OUT_OF_PRINT"},
+		},
+	}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, &fakeVideoFiles{}, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(100, 80, true)
+	h.SetPublisher(publisher)
+
+	var triggered bool
+	videos.onCountState = func(state string, count int64) int64 {
+		if state != "OUT_OF_PRINT" || triggered {
+			return count
+		}
+		triggered = true
+		videos.list[0].State = "STABLE"
+		video := videos.find[1]
+		video.State = "STABLE"
+		videos.find[1] = video
+		h.syncStorageRareVideosOnCheck("OUT_OF_PRINT", "STABLE")
+		return count
+	}
+
+	h.seedStorageSnapshot(context.Background(), 10, 1)
+	h.publishStorageChanged(context.Background(), storageDelta{})
+
+	evt := mustFindLastEventByType(t, publisher.events, "storage.changed")
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	if got := payload["rare_videos"]; got != int64(1) {
+		t.Fatalf("expected rare_videos=1 after preserving dirty flag on STABLE, got %v", got)
 	}
 }
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {
+  applyLiveEvent,
   applyRemoteSnapshot,
+  applySystemStatusSnapshot,
   createDefaultState,
   deriveCleanupPreview,
   deriveMetrics,
@@ -165,5 +167,111 @@ const defaults = createDefaultState();
 assert.equal(defaults.creators.length, 0);
 assert.equal(defaults.videos.length, 0);
 assert.equal(defaults.jobs.length, 0);
+
+const liveBase = applyRemoteSnapshot(createDefaultState(), {
+  creators: [{ id: 1, uid: "1001", name: "旧博主", platform: "bilibili", status: "active" }],
+  jobs: [
+    {
+      id: 10,
+      type: "fetch",
+      status: "queued",
+      payload: { scope: "all" },
+      created_at: "2026-04-13T12:00:00Z",
+      updated_at: "2026-04-13T12:00:00Z"
+    }
+  ],
+  videos: [{ id: 20, video_id: "BVOLD", state: "ONLINE", title: "旧视频" }]
+});
+
+const afterJobChanged = applyLiveEvent(liveBase, {
+  type: "job.changed",
+  data: {
+    job: { id: 10, status: "running", updated_at: "2026-04-13T12:05:00Z" }
+  }
+});
+assert.equal(afterJobChanged.jobs.length, 1);
+assert.equal(afterJobChanged.jobs[0].status, "running");
+assert.equal(afterJobChanged.jobs[0].type, "fetch");
+assert.deepEqual(afterJobChanged.jobs[0].payload, { scope: "all" });
+assert.equal(afterJobChanged.jobs[0].createdAt, "2026-04-13T12:00:00Z");
+
+const afterVideoChanged = applyLiveEvent(afterJobChanged, {
+  type: "video.changed",
+  data: {
+    video: { id: 20, video_id: "BVOLD", state: "OUT_OF_PRINT", title: "旧视频" }
+  }
+});
+assert.equal(afterVideoChanged.videos.length, 1);
+assert.equal(afterVideoChanged.videos[0].state, "OUT_OF_PRINT");
+
+const afterCreatorChanged = applyLiveEvent(afterVideoChanged, {
+  type: "creator.changed",
+  data: {
+    creator: { id: 2, uid: "2002", name: "新博主", platform: "bilibili", status: "active" }
+  }
+});
+assert.equal(afterCreatorChanged.creators.length, 2);
+assert.equal(afterCreatorChanged.creators[0].id, 2);
+
+const afterStorageChanged = applyLiveEvent(afterCreatorChanged, {
+  type: "storage.changed",
+  data: {
+    storage: {
+      used_bytes: 2048,
+      max_bytes: 4096,
+      safe_bytes: 3072,
+      usage_percent: 50,
+      file_count: 30,
+      hottest_bucket: "bilibili",
+      root_dir: "/data/new"
+    }
+  }
+});
+assert.equal(afterStorageChanged.storage.usedBytes, 2048);
+assert.equal(afterStorageChanged.storage.rootDir, "/data/new");
+
+const afterSystemChanged = applyLiveEvent(afterStorageChanged, {
+  type: "system.changed",
+  data: {
+    system: {
+      cookie: { status: "invalid", configured: true, source: "cookie_file" },
+      risk_level: "高",
+      risk: { active: true, backoff_seconds: 120 }
+    }
+  }
+});
+assert.equal(afterSystemChanged.system.cookieStatus, "invalid");
+assert.equal(afterSystemChanged.system.riskLevel, "高");
+assert.equal(afterSystemChanged.system.riskBackoffSeconds, 120);
+
+const afterSystemSnapshot = applySystemStatusSnapshot(
+  {
+    ...afterSystemChanged,
+    connection: {
+      ...afterSystemChanged.connection,
+      status: "reconnecting"
+    }
+  },
+  {
+    health: "online",
+    active_jobs: 2,
+    limits: { download_concurrency: 6 }
+  }
+);
+assert.equal(afterSystemSnapshot.connection.status, "reconnecting");
+assert.equal(afterSystemSnapshot.system.activeJobs, 2);
+assert.equal(afterSystemSnapshot.limits.downloadConcurrency, 6);
+
+const afterHello = applyLiveEvent(afterSystemChanged, { type: "hello", data: {} });
+assert.equal(afterHello.connection.status, "live");
+
+const afterHeartbeat = applyLiveEvent(afterHello, { type: "heartbeat", data: {} });
+assert.equal(afterHeartbeat.connection.status, "live");
+
+const afterReconnect = applyLiveEvent(afterHeartbeat, { type: "stream.reconnecting", data: {} });
+assert.equal(afterReconnect.connection.status, "reconnecting");
+
+const afterOffline = applyLiveEvent(afterReconnect, { type: "stream.offline", data: {} });
+assert.equal(afterOffline.connection.status, "offline");
 
 console.log("dashboard state ok");

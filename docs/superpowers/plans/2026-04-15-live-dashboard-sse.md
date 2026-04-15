@@ -417,7 +417,7 @@ git commit -m "feat(前端): 接入实时驾驶舱 SSE 更新"
 - 修改：`docs/api.md`
 - 修改：`docs/todo.md`
 
-- [ ] **步骤 1：先写 E2E 失败测试**
+- [x] **步骤 1：先写 E2E 失败测试**
 
 覆盖用例：
 - 点击“立即拉取”后，任务状态自动从 `queued -> running -> success`
@@ -427,7 +427,7 @@ git commit -m "feat(前端): 接入实时驾驶舱 SSE 更新"
 运行：`cd frontend && npm run test:e2e`
 预期：FAIL
 
-- [ ] **步骤 2：实现低频快照对账**
+- [x] **步骤 2：实现低频快照对账**
 
 实现要求：
 - SSE 正常时仍保留低频对账：
@@ -436,19 +436,19 @@ git commit -m "feat(前端): 接入实时驾驶舱 SSE 更新"
   - 必要时整页快照：60 秒
 - 页面隐藏时暂停本地高频派生，不暂停 SSE 连接
 
-- [ ] **步骤 3：完善 mock SSE 流并让 E2E 通过**
+- [x] **步骤 3：完善 mock SSE 流并让 E2E 通过**
 
 运行：`cd frontend && npm run test:e2e`
 预期：PASS
 
-- [ ] **步骤 4：更新文档**
+- [x] **步骤 4：更新文档**
 
 同步说明：
 - README 增加“实时连接状态 / SSE”说明
 - `docs/api.md` 增加 `/events/stream`
 - `docs/todo.md` 更新该事项状态
 
-- [ ] **步骤 5：全量验证**
+- [x] **步骤 5：全量验证**
 
 运行：
 
@@ -468,9 +468,9 @@ git commit -m "feat(实时驾驶舱): 完成 SSE 联动与对账"
 
 ## 交付检查
 
-- [ ] 任务、视频、博主、Cookie/风控状态在页面中自动更新
-- [ ] 存储统计能在下载/清理后尽快更新，并由低频快照校正
-- [ ] SSE 断线后页面展示明确状态，并能自动重连
-- [ ] 首屏初始化、断线恢复、后端重启后恢复都能回到一致状态
-- [ ] `go test ./... -count=1` 通过
-- [ ] `cd frontend && npm run test:e2e && npm run build` 通过
+- [x] 任务、视频、博主、Cookie/风控状态在页面中自动更新
+- [x] 存储统计能在下载/清理后尽快更新，并由低频快照校正
+- [x] SSE 断线后页面展示明确状态，并能自动重连
+- [x] 首屏初始化、断线恢复、后端重启后恢复都能回到一致状态
+- [x] `go test ./... -count=1` 通过
+- [x] `cd frontend && npm run test:e2e && npm run build` 通过

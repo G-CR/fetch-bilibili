@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"fetch-bilibili/internal/config"
+	"fetch-bilibili/internal/live"
 )
 
 var ErrInvalidID = errors.New("无效的 ID")
@@ -60,6 +62,7 @@ type Client struct {
 	riskRand    *rand.Rand
 	statusMu    sync.RWMutex
 	status      RuntimeStatus
+	publisher   systemEventPublisher
 }
 
 type Option func(*Client)
@@ -71,11 +74,35 @@ type RuntimeStatus struct {
 	LastReloadResult string
 	LastCheckAt      time.Time
 	LastCheckResult  string
+	LastCheckMid     int64
+	LastCheckUname   string
 	LastError        string
 	RiskUntil        time.Time
 	RiskBackoff      time.Duration
 	LastRiskAt       time.Time
 	LastRiskReason   string
+}
+
+type systemEventPublisher interface {
+	Publish(evt live.Event)
+}
+
+type systemCookieState struct {
+	Configured       bool
+	Source           string
+	Status           string
+	IsLogin          bool
+	Mid              int64
+	Uname            string
+	LastReloadResult string
+	LastCheckResult  string
+	LastError        string
+}
+
+type systemRiskState struct {
+	Active       bool
+	BackoffUntil time.Time
+	LastReason   string
 }
 
 func WithBaseURL(base string) Option {
@@ -162,6 +189,12 @@ func New(cfg config.BilibiliConfig, logger *log.Logger, opts ...Option) *Client 
 		opt(c)
 	}
 	return c
+}
+
+func (c *Client) SetPublisher(publisher systemEventPublisher) {
+	c.statusMu.Lock()
+	c.publisher = publisher
+	c.statusMu.Unlock()
 }
 
 func (c *Client) ListVideos(ctx context.Context, uid string) ([]VideoMeta, error) {
@@ -255,9 +288,11 @@ func (c *Client) CheckAvailable(ctx context.Context, videoID string) (bool, erro
 
 func (c *Client) CheckAuth(ctx context.Context) (AuthInfo, error) {
 	checkedAt := c.now()
+	before := c.RuntimeStatus()
 	var resp navResp
 	if err := c.doGetJSON(ctx, "/x/web-interface/nav", "", &resp); err != nil {
-		c.recordCheck(checkedAt, "error", err.Error())
+		c.recordCheck(checkedAt, "error", err.Error(), 0, "")
+		c.publishSystemChangedIfNeeded(before, c.RuntimeStatus())
 		return AuthInfo{}, err
 	}
 	if resp.Code != 0 {
@@ -265,14 +300,17 @@ func (c *Client) CheckAuth(ctx context.Context) (AuthInfo, error) {
 			c.markRiskReason(fmt.Sprintf("/x/web-interface/nav 返回风控码 %d", resp.Code))
 		}
 		err := fmt.Errorf("认证检查失败: %s(%d)", resp.Message, resp.Code)
-		c.recordCheck(checkedAt, "error", err.Error())
+		c.recordCheck(checkedAt, "error", err.Error(), 0, "")
+		c.publishSystemChangedIfNeeded(before, c.RuntimeStatus())
 		return AuthInfo{}, err
 	}
 	if !resp.Data.IsLogin {
-		c.recordCheck(checkedAt, "invalid", "")
+		c.recordCheck(checkedAt, "invalid", "", 0, "")
+		c.publishSystemChangedIfNeeded(before, c.RuntimeStatus())
 		return AuthInfo{IsLogin: false}, nil
 	}
-	c.recordCheck(checkedAt, "valid", "")
+	c.recordCheck(checkedAt, "valid", "", resp.Data.Mid, resp.Data.Uname)
+	c.publishSystemChangedIfNeeded(before, c.RuntimeStatus())
 	return AuthInfo{IsLogin: true, Mid: resp.Data.Mid, Uname: resp.Data.Uname}, nil
 }
 
@@ -394,7 +432,9 @@ func (c *Client) Download(ctx context.Context, videoID, dst string) (int64, erro
 }
 
 func (c *Client) ReloadAuth() (bool, error) {
+	before := c.RuntimeStatus()
 	c.recordReload(c.now(), "no_change", "", "")
+	c.publishSystemChangedIfNeeded(before, c.RuntimeStatus())
 	return false, nil
 }
 
@@ -751,6 +791,7 @@ func (c *Client) markRisk() {
 }
 
 func (c *Client) markRiskReason(reason string) {
+	before := c.RuntimeStatus()
 	c.riskMu.Lock()
 	defer c.riskMu.Unlock()
 
@@ -778,9 +819,11 @@ func (c *Client) markRiskReason(reason string) {
 	c.status.LastRiskAt = c.now()
 	c.status.LastRiskReason = strings.TrimSpace(reason)
 	c.statusMu.Unlock()
+	c.publishSystemChangedIfNeeded(before, c.RuntimeStatus())
 }
 
 func (c *Client) resetRisk() {
+	before := c.RuntimeStatus()
 	c.riskMu.Lock()
 	c.riskBackoff = 0
 	c.riskUntil = time.Time{}
@@ -789,6 +832,7 @@ func (c *Client) resetRisk() {
 	c.status.RiskBackoff = 0
 	c.status.RiskUntil = time.Time{}
 	c.statusMu.Unlock()
+	c.publishSystemChangedIfNeeded(before, c.RuntimeStatus())
 }
 
 func (c *Client) getCachedName(key string) (string, string, bool) {
@@ -907,14 +951,130 @@ func (c *Client) recordReload(at time.Time, result, errMsg, source string) {
 	}
 }
 
-func (c *Client) recordCheck(at time.Time, result, errMsg string) {
+func (c *Client) recordCheck(at time.Time, result, errMsg string, mid int64, uname string) {
 	c.statusMu.Lock()
 	defer c.statusMu.Unlock()
 	c.status.LastCheckAt = at
 	c.status.LastCheckResult = result
+	c.status.LastCheckMid = mid
+	c.status.LastCheckUname = strings.TrimSpace(uname)
 	if strings.TrimSpace(errMsg) != "" {
 		c.status.LastError = strings.TrimSpace(errMsg)
 	}
+}
+
+func (c *Client) publishSystemChangedIfNeeded(before, after RuntimeStatus) {
+	if c.cookieState(before) != c.cookieState(after) || c.riskState(before) != c.riskState(after) {
+		c.publishSystemChanged(after)
+	}
+}
+
+func (c *Client) publishSystemChanged(status RuntimeStatus) {
+	c.statusMu.RLock()
+	publisher := c.publisher
+	c.statusMu.RUnlock()
+	if publisher == nil {
+		return
+	}
+	at := c.now()
+	publisher.Publish(live.Event{
+		ID:   fmt.Sprintf("system-%d", at.UnixNano()),
+		Type: "system.changed",
+		At:   at,
+		Payload: map[string]any{
+			"cookie": c.cookiePayload(status),
+			"risk":   c.riskPayload(status),
+		},
+	})
+}
+
+func (c *Client) cookieState(status RuntimeStatus) systemCookieState {
+	cookieStatus, isLogin := deriveCookieStatus(status)
+	return systemCookieState{
+		Configured:       status.CookieConfigured,
+		Source:           status.CookieSource,
+		Status:           cookieStatus,
+		IsLogin:          isLogin,
+		Mid:              status.LastCheckMid,
+		Uname:            strings.TrimSpace(status.LastCheckUname),
+		LastReloadResult: status.LastReloadResult,
+		LastCheckResult:  status.LastCheckResult,
+		LastError:        strings.TrimSpace(status.LastError),
+	}
+}
+
+func (c *Client) riskState(status RuntimeStatus) systemRiskState {
+	return systemRiskState{
+		Active:       !status.RiskUntil.IsZero() && status.RiskUntil.After(c.now()),
+		BackoffUntil: status.RiskUntil,
+		LastReason:   strings.TrimSpace(status.LastRiskReason),
+	}
+}
+
+func (c *Client) cookiePayload(status RuntimeStatus) map[string]any {
+	cookieStatus, isLogin := deriveCookieStatus(status)
+	payload := map[string]any{
+		"configured":         status.CookieConfigured,
+		"is_login":           isLogin,
+		"mid":                status.LastCheckMid,
+		"uname":              strings.TrimSpace(status.LastCheckUname),
+		"status":             cookieStatus,
+		"source":             strings.TrimSpace(status.CookieSource),
+		"last_check_at":      formatSystemEventTime(status.LastCheckAt),
+		"last_check_result":  status.LastCheckResult,
+		"last_reload_at":     formatSystemEventTime(status.LastReloadAt),
+		"last_reload_result": status.LastReloadResult,
+		"last_error":         strings.TrimSpace(status.LastError),
+	}
+	if cookieStatus == "error" {
+		payload["error"] = strings.TrimSpace(status.LastError)
+	}
+	return payload
+}
+
+func (c *Client) riskPayload(status RuntimeStatus) map[string]any {
+	now := c.now()
+	active := !status.RiskUntil.IsZero() && status.RiskUntil.After(now)
+	payload := map[string]any{
+		"level":           "低",
+		"active":          active,
+		"backoff_until":   "",
+		"backoff_seconds": int64(0),
+		"last_hit_at":     formatSystemEventTime(status.LastRiskAt),
+		"last_reason":     strings.TrimSpace(status.LastRiskReason),
+	}
+	if active {
+		payload["level"] = "高"
+		payload["backoff_until"] = formatSystemEventTime(status.RiskUntil)
+		payload["backoff_seconds"] = int64(math.Ceil(status.RiskUntil.Sub(now).Seconds()))
+		if payload["backoff_seconds"].(int64) < 0 {
+			payload["backoff_seconds"] = int64(0)
+		}
+	}
+	return payload
+}
+
+func deriveCookieStatus(status RuntimeStatus) (string, bool) {
+	if !status.CookieConfigured {
+		return "not_configured", false
+	}
+	switch status.LastCheckResult {
+	case "valid":
+		return "valid", true
+	case "invalid":
+		return "invalid", false
+	case "error":
+		return "error", false
+	default:
+		return "unknown", false
+	}
+}
+
+func formatSystemEventTime(v time.Time) string {
+	if v.IsZero() {
+		return ""
+	}
+	return v.Format(time.RFC3339)
 }
 
 // API response types

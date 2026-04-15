@@ -35,6 +35,7 @@ type storageSnapshot struct {
 	usedBytes   int64
 	fileCount   int64
 	rareVideos  int64
+	dirtyRare   bool
 }
 
 type storageDelta struct {
@@ -436,6 +437,7 @@ func (h *DefaultHandler) handleCheck(ctx context.Context, job repo.Job) error {
 			lastErr = err
 			continue
 		}
+		h.syncStorageRareVideosOnCheck(video.State, newState)
 		if shouldPublishVideoChanged(video.State, newState) {
 			next := video
 			next.State = newState
@@ -451,6 +453,24 @@ func (h *DefaultHandler) handleCheck(ctx context.Context, job repo.Job) error {
 	}
 
 	return lastErr
+}
+
+func (h *DefaultHandler) syncStorageRareVideosOnCheck(prevState, nextState string) {
+	if prevState == nextState {
+		return
+	}
+	prevRare := prevState == "OUT_OF_PRINT"
+	nextRare := nextState == "OUT_OF_PRINT"
+	if prevRare == nextRare {
+		return
+	}
+	if h.storageRoot == "" {
+		return
+	}
+
+	h.storageMu.Lock()
+	defer h.storageMu.Unlock()
+	h.storageSnapshot.dirtyRare = true
 }
 
 func (h *DefaultHandler) handleDownload(ctx context.Context, job repo.Job) error {
@@ -725,6 +745,7 @@ func (h *DefaultHandler) applyStorageDelta(ctx context.Context, delta storageDel
 	h.storageMu.Lock()
 	defer h.storageMu.Unlock()
 
+	refreshedRare := false
 	if !h.storageSnapshot.initialized {
 		usedBytes, fileCount, err := scanStorageUsageFn(h.storageRoot)
 		if err != nil {
@@ -740,11 +761,22 @@ func (h *DefaultHandler) applyStorageDelta(ctx context.Context, delta storageDel
 			fileCount:   fileCount,
 			rareVideos:  rareVideos,
 		}
+		refreshedRare = true
+	} else if h.storageSnapshot.dirtyRare {
+		rareVideos, err := h.countRareVideos(ctx)
+		if err != nil {
+			return storageSnapshot{}, err
+		}
+		h.storageSnapshot.rareVideos = rareVideos
+		h.storageSnapshot.dirtyRare = false
+		refreshedRare = true
 	}
 
 	h.storageSnapshot.usedBytes += delta.usedBytes
 	h.storageSnapshot.fileCount += delta.fileCount
-	h.storageSnapshot.rareVideos += delta.rareVideos
+	if !refreshedRare {
+		h.storageSnapshot.rareVideos += delta.rareVideos
+	}
 	if h.storageSnapshot.usedBytes < 0 {
 		h.storageSnapshot.usedBytes = 0
 	}
@@ -797,11 +829,13 @@ func (h *DefaultHandler) seedStorageSnapshot(ctx context.Context, usedBytes, fil
 
 	h.storageMu.Lock()
 	if !h.storageSnapshot.initialized {
+		dirtyRare := h.storageSnapshot.dirtyRare
 		h.storageSnapshot = storageSnapshot{
 			initialized: true,
 			usedBytes:   usedBytes,
 			fileCount:   fileCount,
 			rareVideos:  rareVideos,
+			dirtyRare:   dirtyRare,
 		}
 	}
 	h.storageMu.Unlock()

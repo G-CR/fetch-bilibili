@@ -3,6 +3,12 @@ const STORAGE_KEY = "bili-vault-dashboard-v3";
 export function createDefaultState() {
   return {
     apiBase: "http://localhost:8080",
+    connection: {
+      status: "connecting",
+      lastEventAt: "",
+      lastEventType: "",
+      lastError: ""
+    },
     creators: [],
     videos: [],
     jobs: [],
@@ -83,6 +89,10 @@ export function loadState() {
     return {
       ...defaults,
       ...rest,
+      connection: {
+        ...defaults.connection,
+        ...(parsed?.connection || {})
+      },
       creators: isLegacyLocalMode ? defaults.creators : Array.isArray(parsed?.creators) ? parsed.creators : defaults.creators,
       videos: isLegacyLocalMode ? defaults.videos : Array.isArray(parsed?.videos) ? parsed.videos : defaults.videos,
       jobs: isLegacyLocalMode ? defaults.jobs : Array.isArray(parsed?.jobs) ? parsed.jobs : defaults.jobs,
@@ -164,6 +174,121 @@ export function applyRemoteSnapshot(previous, snapshot, lastSyncAt = formatNow()
       storageRoot: stringOr(snapshot?.system?.storage_root, storage.rootDir, previous?.system?.storageRoot, "-"),
       overview
     }
+  };
+}
+
+export function applyLiveEvent(previous, event) {
+  const safePrevious = previous || createDefaultState();
+  const type = String(event?.type || "").trim();
+  const data = event?.data || {};
+  const eventAt = formatNow();
+
+  if (!type) {
+    return safePrevious;
+  }
+
+  switch (type) {
+    case "hello":
+    case "heartbeat":
+    case "stream.live":
+      return applyConnectionPatch(safePrevious, {
+        status: "live",
+        lastEventAt: eventAt,
+        lastEventType: type,
+        lastError: ""
+      });
+    case "stream.connecting":
+      return applyConnectionPatch(safePrevious, {
+        status: "connecting",
+        lastEventAt: eventAt,
+        lastEventType: type
+      });
+    case "stream.reconnecting":
+      return applyConnectionPatch(safePrevious, {
+        status: "reconnecting",
+        lastEventAt: eventAt,
+        lastEventType: type
+      });
+    case "stream.offline":
+      return applyConnectionPatch(safePrevious, {
+        status: "offline",
+        lastEventAt: eventAt,
+        lastEventType: type,
+        lastError: stringOr(data?.message, data?.error, safePrevious?.connection?.lastError, "")
+      });
+    case "job.changed":
+      return applyJobChanged(
+        applyConnectionPatch(safePrevious, {
+          status: "live",
+          lastEventAt: eventAt,
+          lastEventType: type
+        }),
+        data
+      );
+    case "video.changed":
+      return applyVideoChanged(
+        applyConnectionPatch(safePrevious, {
+          status: "live",
+          lastEventAt: eventAt,
+          lastEventType: type
+        }),
+        data
+      );
+    case "creator.changed":
+      return applyCreatorChanged(
+        applyConnectionPatch(safePrevious, {
+          status: "live",
+          lastEventAt: eventAt,
+          lastEventType: type
+        }),
+        data
+      );
+    case "storage.changed": {
+      const storagePayload = data?.storage || data;
+      return {
+        ...applyConnectionPatch(safePrevious, {
+          status: "live",
+          lastEventAt: eventAt,
+          lastEventType: type
+        }),
+        storage: normalizeStorage(storagePayload, safePrevious?.system, safePrevious?.storage),
+        system: {
+          ...safePrevious.system,
+          storageRoot: stringOr(storagePayload?.root_dir, safePrevious?.system?.storageRoot, "-"),
+          overview: {
+            ...safePrevious.system.overview,
+            rareVideos: numberOr(storagePayload?.rare_videos, safePrevious?.system?.overview?.rareVideos, 0)
+          }
+        }
+      };
+    }
+    case "system.changed": {
+      const systemPatch = data?.system || data;
+      return {
+        ...applyConnectionPatch(safePrevious, {
+          status: "live",
+          lastEventAt: eventAt,
+          lastEventType: type
+        }),
+        limits: normalizeLimits(systemPatch?.limits, safePrevious?.limits),
+        scheduler: normalizeScheduler(systemPatch?.scheduler, safePrevious?.scheduler),
+        system: normalizeSystemPatch(safePrevious.system, systemPatch)
+      };
+    }
+    default:
+      return safePrevious;
+  }
+}
+
+export function applySystemStatusSnapshot(previous, payload) {
+  const safePrevious = previous || createDefaultState();
+  const systemPatch = payload || {};
+
+  return {
+    ...safePrevious,
+    limits: normalizeLimits(systemPatch?.limits, safePrevious?.limits),
+    scheduler: normalizeScheduler(systemPatch?.scheduler, safePrevious?.scheduler),
+    system: normalizeSystemPatch(safePrevious.system, systemPatch)
   };
 }
 
@@ -334,6 +459,311 @@ function normalizeOverview(overview, creators, jobs, videos, storage, previous) 
       0
     )
   };
+}
+
+function applyConnectionPatch(previous, patch) {
+  return {
+    ...previous,
+    connection: {
+      status: stringOr(patch?.status, previous?.connection?.status, "connecting"),
+      lastEventAt: stringOr(patch?.lastEventAt, previous?.connection?.lastEventAt, ""),
+      lastEventType: stringOr(patch?.lastEventType, previous?.connection?.lastEventType, ""),
+      lastError: stringOr(patch?.lastError, previous?.connection?.lastError, "")
+    }
+  };
+}
+
+function mergeEntityByID(previousItems, nextPatch, data, createEmptyItem) {
+  const base = Array.isArray(previousItems) ? previousItems : [];
+  const next = nextPatch && typeof nextPatch === "object" ? nextPatch : null;
+
+  if (!next || !Number.isFinite(next.id) || next.id <= 0) {
+    return base;
+  }
+
+  if (isDeletedEvent(data)) {
+    return base.filter((item) => item?.id !== next.id);
+  }
+
+  const index = base.findIndex((item) => item?.id === next.id);
+  const current = index >= 0 ? base[index] : createEmptyItem(next.id);
+  const merged = {
+    ...current,
+    ...next
+  };
+
+  if (index >= 0) {
+    const cloned = base.slice();
+    cloned[index] = merged;
+    return cloned;
+  }
+  return [merged, ...base];
+}
+
+function isDeletedEvent(data) {
+  const action = String(data?.action || data?.op || data?.change || "").toLowerCase();
+  return action === "deleted" || action === "remove" || action === "removed" || data?.deleted === true;
+}
+
+function extractEntity(data, key) {
+  if (data?.[key] && typeof data[key] === "object") {
+    return data[key];
+  }
+  return data;
+}
+
+function hasOwnField(value, key) {
+  return Boolean(value) && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function normalizeSystemPatch(previous, systemPatch) {
+  return {
+    ...previous,
+    health: stringOr(systemPatch?.health, previous?.health, "unknown"),
+    activeJobs: numberOr(systemPatch?.active_jobs, previous?.activeJobs, 0),
+    authEnabled: booleanOr(systemPatch?.auth_enabled, previous?.authEnabled, false),
+    riskLevel: stringOr(systemPatch?.risk_level, systemPatch?.risk?.level, previous?.riskLevel, "未知"),
+    riskActive: booleanOr(systemPatch?.risk?.active, previous?.riskActive, false),
+    riskBackoffUntil: stringOr(systemPatch?.risk?.backoff_until, previous?.riskBackoffUntil, ""),
+    riskBackoffSeconds: numberOr(systemPatch?.risk?.backoff_seconds, previous?.riskBackoffSeconds, 0),
+    riskLastHitAt: stringOr(systemPatch?.risk?.last_hit_at, previous?.riskLastHitAt, ""),
+    riskLastReason: stringOr(systemPatch?.risk?.last_reason, previous?.riskLastReason, ""),
+    mysqlOK: booleanOr(systemPatch?.mysql_ok, previous?.mysqlOK, false),
+    cookieStatus: stringOr(systemPatch?.cookie?.status, previous?.cookieStatus, "unknown"),
+    cookieConfigured: booleanOr(systemPatch?.cookie?.configured, previous?.cookieConfigured, false),
+    cookieSource: stringOr(systemPatch?.cookie?.source, previous?.cookieSource, ""),
+    cookieUname: stringOr(systemPatch?.cookie?.uname, previous?.cookieUname, ""),
+    cookieMid: numberOr(systemPatch?.cookie?.mid, previous?.cookieMid, 0),
+    cookieLastCheckAt: stringOr(systemPatch?.cookie?.last_check_at, previous?.cookieLastCheckAt, ""),
+    cookieLastCheckResult: stringOr(systemPatch?.cookie?.last_check_result, previous?.cookieLastCheckResult, ""),
+    cookieLastReloadAt: stringOr(systemPatch?.cookie?.last_reload_at, previous?.cookieLastReloadAt, ""),
+    cookieLastReloadResult: stringOr(systemPatch?.cookie?.last_reload_result, previous?.cookieLastReloadResult, ""),
+    cookieLastError: stringOr(systemPatch?.cookie?.last_error, previous?.cookieLastError, ""),
+    lastJobAt: stringOr(systemPatch?.last_job_at, previous?.lastJobAt, ""),
+    storageRoot: stringOr(systemPatch?.storage_root, previous?.storageRoot, "-"),
+    overview: {
+      ...previous?.overview,
+      activeCreators: numberOr(systemPatch?.overview?.active_creators, previous?.overview?.activeCreators, 0),
+      pendingJobs: numberOr(systemPatch?.overview?.pending_jobs, previous?.overview?.pendingJobs, 0),
+      rareVideos: numberOr(systemPatch?.overview?.rare_videos, previous?.overview?.rareVideos, 0)
+    }
+  };
+}
+
+function applyJobChanged(previous, data) {
+  const jobs = mergeEntityByID(previous.jobs, normalizeJobPatch(extractEntity(data, "job")), data, createEmptyJob);
+  const pendingJobs = jobs.filter((job) => job.status === "queued" || job.status === "running").length;
+  const latestJob = [...jobs].sort((left, right) => sortByTime(right) - sortByTime(left))[0] || null;
+
+  return {
+    ...previous,
+    jobs,
+    system: {
+      ...previous.system,
+      activeJobs: pendingJobs,
+      lastJobAt: stringOr(latestJob?.updatedAt, latestJob?.createdAt, previous.system.lastJobAt, ""),
+      overview: {
+        ...previous.system.overview,
+        pendingJobs
+      }
+    }
+  };
+}
+
+function applyVideoChanged(previous, data) {
+  const videos = mergeEntityByID(previous.videos, normalizeVideoPatch(extractEntity(data, "video")), data, createEmptyVideo);
+  const rareVideos = videos.filter((video) => video.state === "OUT_OF_PRINT").length;
+
+  return {
+    ...previous,
+    videos,
+    system: {
+      ...previous.system,
+      overview: {
+        ...previous.system.overview,
+        rareVideos
+      }
+    }
+  };
+}
+
+function applyCreatorChanged(previous, data) {
+  const creators = mergeEntityByID(
+    previous.creators,
+    normalizeCreatorPatch(extractEntity(data, "creator")),
+    data,
+    createEmptyCreator
+  );
+  const activeCreators = creators.filter((creator) => creator.status === "active").length;
+
+  return {
+    ...previous,
+    creators,
+    system: {
+      ...previous.system,
+      overview: {
+        ...previous.system.overview,
+        activeCreators
+      }
+    }
+  };
+}
+
+function createEmptyCreator(id) {
+  return {
+    id: numberOr(id, 0),
+    uid: "",
+    name: "",
+    platform: "bilibili",
+    status: "active"
+  };
+}
+
+function createEmptyJob(id) {
+  return {
+    id: numberOr(id, 0),
+    type: "",
+    status: "queued",
+    payload: {},
+    errorMsg: "",
+    createdAt: "",
+    updatedAt: "",
+    startedAt: "",
+    finishedAt: "",
+    origin: "remote"
+  };
+}
+
+function createEmptyVideo(id) {
+  return {
+    id: numberOr(id, 0),
+    platform: "bilibili",
+    videoId: "",
+    creatorId: 0,
+    title: "",
+    description: "",
+    publishTime: "",
+    duration: 0,
+    coverUrl: "",
+    viewCount: 0,
+    favoriteCount: 0,
+    state: "UNKNOWN",
+    outOfPrintAt: "",
+    stableAt: "",
+    lastCheckAt: ""
+  };
+}
+
+function normalizeCreatorPatch(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+  const patch = {};
+  if (hasOwnField(item, "id")) {
+    patch.id = numberOr(item.id, 0);
+  }
+  if (hasOwnField(item, "uid")) {
+    patch.uid = String(item.uid || "");
+  }
+  if (hasOwnField(item, "name")) {
+    patch.name = String(item.name || "");
+  }
+  if (hasOwnField(item, "platform")) {
+    patch.platform = String(item.platform || "bilibili");
+  }
+  if (hasOwnField(item, "status")) {
+    patch.status = String(item.status || "active");
+  }
+  return patch;
+}
+
+function normalizeJobPatch(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+  const patch = {};
+  if (hasOwnField(item, "id")) {
+    patch.id = numberOr(item.id, 0);
+  }
+  if (hasOwnField(item, "type")) {
+    patch.type = String(item.type || "");
+  }
+  if (hasOwnField(item, "status")) {
+    patch.status = String(item.status || "queued");
+  }
+  if (hasOwnField(item, "payload")) {
+    patch.payload = objectOr(item.payload, {});
+    patch.origin = stringOr(item.payload?.origin, item.payload?.source, "remote");
+  }
+  if (hasOwnField(item, "error_msg")) {
+    patch.errorMsg = String(item.error_msg || "");
+  }
+  if (hasOwnField(item, "created_at")) {
+    patch.createdAt = String(item.created_at || "");
+  }
+  if (hasOwnField(item, "updated_at")) {
+    patch.updatedAt = String(item.updated_at || "");
+  }
+  if (hasOwnField(item, "started_at")) {
+    patch.startedAt = String(item.started_at || "");
+  }
+  if (hasOwnField(item, "finished_at")) {
+    patch.finishedAt = String(item.finished_at || "");
+  }
+  return patch;
+}
+
+function normalizeVideoPatch(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+  const patch = {};
+  if (hasOwnField(item, "id")) {
+    patch.id = numberOr(item.id, 0);
+  }
+  if (hasOwnField(item, "platform")) {
+    patch.platform = String(item.platform || "bilibili");
+  }
+  if (hasOwnField(item, "video_id")) {
+    patch.videoId = String(item.video_id || "");
+  }
+  if (hasOwnField(item, "creator_id")) {
+    patch.creatorId = numberOr(item.creator_id, 0);
+  }
+  if (hasOwnField(item, "title")) {
+    patch.title = String(item.title || "");
+  }
+  if (hasOwnField(item, "description")) {
+    patch.description = String(item.description || "");
+  }
+  if (hasOwnField(item, "publish_time")) {
+    patch.publishTime = String(item.publish_time || "");
+  }
+  if (hasOwnField(item, "duration")) {
+    patch.duration = numberOr(item.duration, 0);
+  }
+  if (hasOwnField(item, "cover_url")) {
+    patch.coverUrl = String(item.cover_url || "");
+  }
+  if (hasOwnField(item, "view_count")) {
+    patch.viewCount = numberOr(item.view_count, 0);
+  }
+  if (hasOwnField(item, "favorite_count")) {
+    patch.favoriteCount = numberOr(item.favorite_count, 0);
+  }
+  if (hasOwnField(item, "state")) {
+    patch.state = String(item.state || "UNKNOWN");
+  }
+  if (hasOwnField(item, "out_of_print_at")) {
+    patch.outOfPrintAt = String(item.out_of_print_at || "");
+  }
+  if (hasOwnField(item, "stable_at")) {
+    patch.stableAt = String(item.stable_at || "");
+  }
+  if (hasOwnField(item, "last_check_at")) {
+    patch.lastCheckAt = String(item.last_check_at || "");
+  }
+  return patch;
 }
 
 function numberOr(...values) {

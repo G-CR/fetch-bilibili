@@ -1,16 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  createDashboardEventStream,
   createCreator,
   deleteCreator,
   enqueueJob,
   formatRequestError,
+  getSystemStatus,
   getSystemConfig,
   loadDashboardSnapshot,
   patchCreator,
   updateSystemConfig
 } from "./lib/api";
 import {
+  applyLiveEvent,
   applyRemoteSnapshot,
+  applySystemStatusSnapshot,
   deriveCleanupPreview,
   deriveMetrics,
   deriveTaskDiagnostics,
@@ -41,8 +45,37 @@ const platformOptions = [
   { value: "xiaohongshu", label: "小红书" }
 ];
 
+const SYSTEM_RECONCILE_INTERVAL_MS = 30 * 1000;
+const SNAPSHOT_RECONCILE_INTERVAL_MS = 60 * 1000;
+const AUTHORITATIVE_LIVE_EVENT_TYPES = new Set([
+  "job.changed",
+  "video.changed",
+  "creator.changed",
+  "storage.changed",
+  "system.changed"
+]);
+
+function beginVersionedRequest(requestVersionRef, stateVersionRef) {
+  const requestVersion = requestVersionRef.current + 1;
+  requestVersionRef.current = requestVersion;
+  return {
+    requestVersion,
+    stateVersion: stateVersionRef.current
+  };
+}
+
+function isVersionedRequestCurrent(requestVersionRef, stateVersionRef, requestMeta) {
+  return (
+    requestVersionRef.current === requestMeta.requestVersion && stateVersionRef.current === requestMeta.stateVersion
+  );
+}
+
 function App() {
   const [state, setState] = useState(() => loadState());
+  const hasStreamOpenedRef = useRef(false);
+  const authoritativeStateVersionRef = useRef(0);
+  const snapshotRequestVersionRef = useRef(0);
+  const systemRequestVersionRef = useRef(0);
   const [activeSection, setActiveSection] = useState("overview");
   const [selectedJobId, setSelectedJobId] = useState(null);
   const [toast, setToast] = useState("");
@@ -103,9 +136,63 @@ function App() {
   }, []);
 
   useEffect(() => {
-    void syncDashboardFromAPI({ silent: true });
+    let disposed = false;
+    let stream = null;
+    let systemTimer = 0;
+    let snapshotTimer = 0;
+
+    hasStreamOpenedRef.current = false;
+    updateState((previous) => applyLiveEvent(previous, { type: "stream.connecting", data: {} }));
+
+    const boot = async () => {
+      await syncDashboardFromAPI({ silent: true, withLog: false });
+      if (disposed) {
+        return;
+      }
+      stream = createDashboardEventStream(state.apiBase, {
+        onOpen: () => {
+          const wasOpened = hasStreamOpenedRef.current;
+          hasStreamOpenedRef.current = true;
+          updateState((previous) => applyLiveEvent(previous, { type: "stream.live", data: {} }));
+          if (wasOpened) {
+            void syncDashboardFromAPI({ silent: true, withLog: false });
+          }
+        },
+        onError: (error) => {
+          const status = hasStreamOpenedRef.current ? "stream.reconnecting" : "stream.offline";
+          updateState((previous) =>
+            applyLiveEvent(previous, {
+              type: status,
+              data: { message: formatRequestError(error) }
+            })
+          );
+        },
+        onEvent: (event) => {
+          if (AUTHORITATIVE_LIVE_EVENT_TYPES.has(event?.type)) {
+            authoritativeStateVersionRef.current += 1;
+          }
+          updateState((previous) => applyLiveEvent(previous, event));
+        }
+      });
+
+      systemTimer = window.setInterval(() => {
+        void syncSystemStatus({ silent: true });
+      }, SYSTEM_RECONCILE_INTERVAL_MS);
+      snapshotTimer = window.setInterval(() => {
+        void syncDashboardFromAPI({ silent: true, withLog: false });
+      }, SNAPSHOT_RECONCILE_INTERVAL_MS);
+    };
+
+    void boot();
     void loadSystemConfig({ silent: true });
-  }, []);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(systemTimer);
+      window.clearInterval(snapshotTimer);
+      stream?.close();
+    };
+  }, [state.apiBase]);
 
   useEffect(() => {
     setSelectedJobId((current) => {
@@ -137,17 +224,28 @@ function App() {
     showToast.timer = window.setTimeout(() => setToast(""), 2200);
   }
 
-  async function syncDashboardFromAPI({ silent = false } = {}) {
-    setBusyAction("sync");
+  async function syncDashboardFromAPI({ silent = false, withLog = !silent } = {}) {
+    const requestMeta = beginVersionedRequest(snapshotRequestVersionRef, authoritativeStateVersionRef);
+    if (!silent) {
+      setBusyAction("sync");
+    }
     try {
       const snapshot = await loadDashboardSnapshot(state.apiBase);
+      if (!isVersionedRequestCurrent(snapshotRequestVersionRef, authoritativeStateVersionRef, requestMeta)) {
+        return;
+      }
+      authoritativeStateVersionRef.current += 1;
       const syncAt = nowLabel();
       updateState((previous) => ({
         ...applyRemoteSnapshot(previous, snapshot, syncAt),
-        logs: [
-          makeLog(`已同步真实数据: ${snapshot.creators.length} 个博主 / ${snapshot.jobs.length} 个任务 / ${snapshot.videos.length} 个视频`),
-          ...(previous.logs || [])
-        ].slice(0, 18)
+        logs: withLog
+          ? [
+              makeLog(
+                `已同步真实数据: ${snapshot.creators.length} 个博主 / ${snapshot.jobs.length} 个任务 / ${snapshot.videos.length} 个视频`
+              ),
+              ...(previous.logs || [])
+            ].slice(0, 18)
+          : previous.logs || []
       }));
       if (!silent) {
         showToast("同步完成");
@@ -160,16 +258,44 @@ function App() {
           ...previous.system,
           health: "degraded"
         },
-        logs: [makeLog(`同步失败: ${message}`), ...(previous.logs || [])].slice(0, 18)
+        logs: withLog ? [makeLog(`同步失败: ${message}`), ...(previous.logs || [])].slice(0, 18) : previous.logs || []
       }));
-      showToast(message);
+      if (!silent) {
+        showToast(message);
+      }
     } finally {
-      setBusyAction("");
+      if (!silent) {
+        setBusyAction("");
+      }
+    }
+  }
+
+  async function syncSystemStatus({ silent = false } = {}) {
+    try {
+      const requestMeta = beginVersionedRequest(systemRequestVersionRef, authoritativeStateVersionRef);
+      const payload = await getSystemStatus(state.apiBase);
+      if (!isVersionedRequestCurrent(systemRequestVersionRef, authoritativeStateVersionRef, requestMeta)) {
+        return;
+      }
+      authoritativeStateVersionRef.current += 1;
+      updateState((previous) => applySystemStatusSnapshot(previous, payload));
+    } catch (error) {
+      if (!silent) {
+        const message = formatRequestError(error);
+        pushLog(`刷新系统状态失败: ${message}`);
+        showToast(message);
+      }
     }
   }
 
   async function refreshAfterMutation(successMessage) {
+    const requestMeta = beginVersionedRequest(snapshotRequestVersionRef, authoritativeStateVersionRef);
     const snapshot = await loadDashboardSnapshot(state.apiBase);
+    if (!isVersionedRequestCurrent(snapshotRequestVersionRef, authoritativeStateVersionRef, requestMeta)) {
+      pushLog(successMessage);
+      return;
+    }
+    authoritativeStateVersionRef.current += 1;
     const syncAt = nowLabel();
     updateState((previous) => ({
       ...applyRemoteSnapshot(previous, snapshot, syncAt),
@@ -336,6 +462,8 @@ function App() {
 
   const storagePercent = `${metrics.storagePercent}%`;
   const healthLabel = healthText(state.system.health);
+  const connectionLabel = connectionText(state.connection?.status);
+  const connectionStatusClass = connectionStatusClassName(state.connection?.status);
   const cookieLabel = cookieText(state.system.cookieStatus, state.system.cookieConfigured);
   const cookieSourceLabel = cookieSourceText(state.system.cookieSource);
   const riskBackoffLabel = riskBackoffText(state.system.riskActive, state.system.riskBackoffSeconds);
@@ -396,6 +524,10 @@ function App() {
             <p className="eyebrow">系统总览</p>
             <h2>绝版视频库</h2>
             <p className="command-copy">用于查看博主追踪、任务执行、视频状态与存储情况；当前数据来自后端接口。</p>
+            <div className={`live-connection ${connectionStatusClass}`} data-testid="live-connection-status">
+              <span className="live-connection-dot" />
+              <span>实时连接状态：{connectionLabel}</span>
+            </div>
           </div>
           <div className="command-actions">
             <button
@@ -1122,6 +1254,34 @@ function healthText(health) {
       return "存在异常";
     default:
       return "状态未知";
+  }
+}
+
+function connectionText(status) {
+  switch (status) {
+    case "connecting":
+      return "连接中";
+    case "live":
+      return "实时同步中";
+    case "reconnecting":
+      return "重连中";
+    case "offline":
+      return "连接中断";
+    default:
+      return "状态未知";
+  }
+}
+
+function connectionStatusClassName(status) {
+  switch (status) {
+    case "live":
+      return "live-connection--live";
+    case "reconnecting":
+      return "live-connection--reconnecting";
+    case "offline":
+      return "live-connection--offline";
+    default:
+      return "live-connection--connecting";
   }
 }
 
