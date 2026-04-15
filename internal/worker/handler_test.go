@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fetch-bilibili/internal/jobs"
+	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/platform/bilibili"
 	"fetch-bilibili/internal/repo"
 )
@@ -299,6 +300,67 @@ func (s *stubClient) Download(ctx context.Context, videoID, dst string) (int64, 
 	return 0, nil
 }
 
+type stubHandlerEventPublisher struct {
+	events []live.Event
+}
+
+func (s *stubHandlerEventPublisher) Publish(evt live.Event) {
+	s.events = append(s.events, evt)
+}
+
+func mustFindEventByType(t *testing.T, events []live.Event, eventType string) live.Event {
+	t.Helper()
+
+	for _, evt := range events {
+		if evt.Type == eventType {
+			return evt
+		}
+	}
+	t.Fatalf("expected %s event, got %+v", eventType, events)
+	return live.Event{}
+}
+
+func assertVideoChangedPayloadShape(t *testing.T, payload map[string]any) {
+	t.Helper()
+
+	for _, key := range []string{
+		"id",
+		"platform",
+		"video_id",
+		"creator_id",
+		"title",
+		"description",
+		"publish_time",
+		"duration",
+		"cover_url",
+		"view_count",
+		"favorite_count",
+		"state",
+		"out_of_print_at",
+		"stable_at",
+		"last_check_at",
+	} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("expected video.changed payload key %q", key)
+		}
+	}
+}
+
+func assertStorageChangedPayloadShape(t *testing.T, payload map[string]any) {
+	t.Helper()
+
+	for _, key := range []string{
+		"used_bytes",
+		"file_count",
+		"rare_videos",
+		"usage_percent",
+	} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("expected storage.changed payload key %q", key)
+		}
+	}
+}
+
 func TestHandleFetchNotInitialized(t *testing.T) {
 	h := NewDefaultHandler(nil, nil, nil, nil, nil, 30, "/tmp", 0, 0, nil)
 	if err := h.Handle(context.Background(), repo.Job{Type: "fetch"}); err == nil {
@@ -495,6 +557,97 @@ func TestHandleDownloadSuccess(t *testing.T) {
 	}
 	if videos.states[1] != "DOWNLOADED" {
 		t.Fatalf("expected state DOWNLOADED")
+	}
+}
+
+func TestHandleDownloadPublishesVideoEvent(t *testing.T) {
+	dir := t.TempDir()
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {
+				ID:            1,
+				Platform:      "bilibili",
+				VideoID:       "v1",
+				CreatorID:     9,
+				Title:         "video-title",
+				Description:   "video-description",
+				PublishTime:   time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+				Duration:      120,
+				CoverURL:      "https://example.com/cover.jpg",
+				ViewCount:     11,
+				FavoriteCount: 12,
+				State:         "NEW",
+			},
+		},
+		list: []repo.Video{
+			{ID: 99, State: "OUT_OF_PRINT"},
+		},
+	}
+	files := &fakeVideoFiles{}
+	client := &stubClient{download: map[string]int64{"v1": 10}}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, client, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(100, 90, true)
+	h.SetPublisher(publisher)
+
+	job := repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(1)}}
+	if err := h.Handle(context.Background(), job); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	evt := mustFindEventByType(t, publisher.events, "video.changed")
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	assertVideoChangedPayloadShape(t, payload)
+	if got := payload["state"]; got != "DOWNLOADED" {
+		t.Fatalf("expected DOWNLOADED state, got %v", got)
+	}
+}
+
+func TestHandleDownloadPublishesStorageEvent(t *testing.T) {
+	dir := t.TempDir()
+	videos := &fakeVideos{
+		find: map[int64]repo.Video{
+			1: {ID: 1, VideoID: "v1", Platform: "bilibili", State: "NEW"},
+		},
+		list: []repo.Video{
+			{ID: 77, State: "OUT_OF_PRINT"},
+			{ID: 78, State: "OUT_OF_PRINT"},
+		},
+	}
+	files := &fakeVideoFiles{}
+	client := &stubClient{download: map[string]int64{"v1": 10}}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, client, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(100, 80, true)
+	h.SetPublisher(publisher)
+
+	job := repo.Job{Type: jobs.TypeDownload, Payload: map[string]any{"video_id": int64(1)}}
+	if err := h.Handle(context.Background(), job); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	evt := mustFindEventByType(t, publisher.events, "storage.changed")
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	assertStorageChangedPayloadShape(t, payload)
+	if got := payload["used_bytes"]; got != int64(10) {
+		t.Fatalf("expected used_bytes=10, got %v", got)
+	}
+	if got := payload["file_count"]; got != int64(1) {
+		t.Fatalf("expected file_count=1, got %v", got)
+	}
+	if got := payload["rare_videos"]; got != int64(2) {
+		t.Fatalf("expected rare_videos=2, got %v", got)
+	}
+	if got := payload["usage_percent"]; got != 10 {
+		t.Fatalf("expected usage_percent=10, got %v", got)
 	}
 }
 
@@ -708,6 +861,103 @@ func TestHandleCleanupNoopWhenBelowSafeThreshold(t *testing.T) {
 	}
 }
 
+func TestHandleCleanupPublishesStorageEvent(t *testing.T) {
+	dir := t.TempDir()
+	path := buildVideoPath(dir, "bilibili", "to-delete")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("12345"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	videos := &fakeVideos{
+		cleanupList: []repo.CleanupCandidate{
+			{
+				VideoID:       1,
+				SourceVideoID: "to-delete",
+				Title:         "cleanup-target",
+				State:         "DOWNLOADED",
+				FileID:        1,
+				FilePath:      path,
+				FileSizeBytes: 5,
+			},
+		},
+	}
+	files := &fakeVideoFiles{
+		fileToVideo:  map[int64]int64{1: 1},
+		countByVideo: map[int64]int64{1: 1},
+	}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(10, 2, true)
+	h.SetPublisher(publisher)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCleanup}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	evt := mustFindEventByType(t, publisher.events, "storage.changed")
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	assertStorageChangedPayloadShape(t, payload)
+}
+
+func TestHandleCleanupPublishesVideoEventWhenDeleted(t *testing.T) {
+	dir := t.TempDir()
+	path := buildVideoPath(dir, "bilibili", "to-delete")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("12345"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	videos := &fakeVideos{
+		cleanupList: []repo.CleanupCandidate{
+			{
+				VideoID:       1,
+				SourceVideoID: "to-delete",
+				Platform:      "bilibili",
+				CreatorID:     9,
+				Title:         "cleanup-target",
+				State:         "DOWNLOADED",
+				ViewCount:     33,
+				FavoriteCount: 44,
+				FileID:        1,
+				FilePath:      path,
+				FileSizeBytes: 5,
+			},
+		},
+	}
+	files := &fakeVideoFiles{
+		fileToVideo:  map[int64]int64{1: 1},
+		countByVideo: map[int64]int64{1: 1},
+	}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, files, nil, &stubClient{}, 30, dir, 0, 0, nil)
+	h.SetStoragePolicy(10, 2, true)
+	h.SetPublisher(publisher)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCleanup}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	evt := mustFindEventByType(t, publisher.events, "video.changed")
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	assertVideoChangedPayloadShape(t, payload)
+	if got := payload["state"]; got != "DELETED" {
+		t.Fatalf("expected DELETED state, got %v", got)
+	}
+}
+
 func TestHandleCleanupSkipsOutOfPrintWhenProtected(t *testing.T) {
 	dir := t.TempDir()
 	rarePath := buildVideoPath(dir, "bilibili", "rare")
@@ -889,6 +1139,40 @@ func TestHandleCleanupDeleteRecordError(t *testing.T) {
 
 	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCleanup}); err == nil {
 		t.Fatalf("expected delete record error")
+	}
+}
+
+func TestHandleCheckPublishesVideoEventForStateTransitions(t *testing.T) {
+	now := time.Now()
+	videos := &fakeVideos{
+		list: []repo.Video{
+			{ID: 1, VideoID: "v1", PublishTime: now.Add(-40 * 24 * time.Hour), State: "DOWNLOADED"},
+			{ID: 2, VideoID: "v2", PublishTime: now.Add(-1 * time.Hour), State: "DOWNLOADED"},
+			{ID: 3, VideoID: "v3", PublishTime: now.Add(-1 * time.Hour), State: "DOWNLOADED"},
+		},
+	}
+	client := &stubClient{available: map[string]bool{
+		"v1": true,
+		"v2": false,
+		"v3": true,
+	}}
+	publisher := &stubHandlerEventPublisher{}
+
+	h := NewDefaultHandler(&fakeCreators{}, videos, nil, nil, client, 30, "/tmp", 0, 0, nil)
+	h.SetPublisher(publisher)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeCheck}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var videoEvents int
+	for _, evt := range publisher.events {
+		if evt.Type == "video.changed" {
+			videoEvents++
+		}
+	}
+	if videoEvents != 2 {
+		t.Fatalf("expected 2 video.changed events, got %d events=%+v", videoEvents, publisher.events)
 	}
 }
 

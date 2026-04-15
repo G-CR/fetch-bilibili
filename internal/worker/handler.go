@@ -15,6 +15,7 @@ import (
 
 	"fetch-bilibili/internal/jobs"
 	"fetch-bilibili/internal/library"
+	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/platform/bilibili"
 	"fetch-bilibili/internal/repo"
 )
@@ -23,6 +24,10 @@ type VideoClient interface {
 	ListVideos(ctx context.Context, uid string) ([]bilibili.VideoMeta, error)
 	CheckAvailable(ctx context.Context, videoID string) (bool, error)
 	Download(ctx context.Context, videoID, dst string) (int64, error)
+}
+
+type stateEventPublisher interface {
+	Publish(evt live.Event)
 }
 
 type DefaultHandler struct {
@@ -45,6 +50,8 @@ type DefaultHandler struct {
 	keepRare         bool
 	cleanupRetention time.Duration
 	cleanupLimit     int
+	publisher        stateEventPublisher
+	now              func() time.Time
 }
 
 func NewDefaultHandler(creators repo.CreatorRepository, videos repo.VideoRepository, videoFiles repo.VideoFileRepository, jobs repo.JobRepository, client VideoClient, stableDays int, storageRoot string, globalQPS, perCreatorQPS int, logger *log.Logger) *DefaultHandler {
@@ -71,7 +78,12 @@ func NewDefaultHandler(creators repo.CreatorRepository, videos repo.VideoReposit
 		perLimiters:  make(map[int64]*limiter),
 		keepRare:     true,
 		cleanupLimit: 500,
+		now:          time.Now,
 	}
+}
+
+func (h *DefaultHandler) SetPublisher(publisher stateEventPublisher) {
+	h.publisher = publisher
 }
 
 func (h *DefaultHandler) SetStoragePolicy(maxBytes, safeBytes int64, keepOutOfPrint bool) {
@@ -248,6 +260,7 @@ func (h *DefaultHandler) handleCleanup(ctx context.Context) error {
 	}
 
 	h.logger.Printf("清理任务完成：已释放 %d 字节，目标 %d 字节", freedBytes, targetBytes)
+	h.publishStorageChanged(ctx)
 	return nil
 }
 
@@ -311,6 +324,16 @@ func (h *DefaultHandler) deleteCleanupCandidate(ctx context.Context, candidate r
 		if err := h.videos.UpdateState(ctx, candidate.VideoID, "DELETED"); err != nil {
 			return 0, err
 		}
+		h.publishVideoChanged(repo.Video{
+			ID:            candidate.VideoID,
+			Platform:      candidate.Platform,
+			VideoID:       candidate.SourceVideoID,
+			CreatorID:     candidate.CreatorID,
+			Title:         candidate.Title,
+			ViewCount:     candidate.ViewCount,
+			FavoriteCount: candidate.FavoriteCount,
+			State:         "DELETED",
+		})
 	}
 
 	h.logger.Printf(
@@ -382,6 +405,19 @@ func (h *DefaultHandler) handleCheck(ctx context.Context, job repo.Job) error {
 		if err := h.videos.UpdateCheckStatus(ctx, video.ID, newState, outOfPrintAt, stableAt, now); err != nil {
 			h.logger.Printf("更新视频状态失败 video_id=%s: %v", video.VideoID, err)
 			lastErr = err
+			continue
+		}
+		if shouldPublishVideoChanged(video.State, newState) {
+			next := video
+			next.State = newState
+			next.LastCheckAt = now
+			if outOfPrintAt != nil {
+				next.OutOfPrintAt = *outOfPrintAt
+			}
+			if stableAt != nil {
+				next.StableAt = *stableAt
+			}
+			h.publishVideoChanged(next)
 		}
 	}
 
@@ -452,6 +488,9 @@ func (h *DefaultHandler) handleDownload(ctx context.Context, job repo.Job) error
 	if err := h.videos.UpdateState(ctx, videoID, "DOWNLOADED"); err != nil {
 		return err
 	}
+	video.State = "DOWNLOADED"
+	h.publishVideoChanged(video)
+	h.publishStorageChanged(ctx)
 	return nil
 }
 
@@ -578,4 +617,107 @@ func payloadInt64(payload map[string]any, key string) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func (h *DefaultHandler) publishVideoChanged(video repo.Video) {
+	if h.publisher == nil {
+		return
+	}
+	at := h.now()
+	if !video.UpdatedAt.IsZero() {
+		at = video.UpdatedAt
+	}
+	platform := video.Platform
+	if platform == "" {
+		platform = "bilibili"
+	}
+
+	h.publisher.Publish(live.Event{
+		ID:   fmt.Sprintf("video-%d-%d", video.ID, at.UnixNano()),
+		Type: "video.changed",
+		At:   at,
+		Payload: map[string]any{
+			"id":              video.ID,
+			"platform":        platform,
+			"video_id":        video.VideoID,
+			"creator_id":      video.CreatorID,
+			"title":           video.Title,
+			"description":     video.Description,
+			"publish_time":    formatChangedEventTime(video.PublishTime),
+			"duration":        video.Duration,
+			"cover_url":       video.CoverURL,
+			"view_count":      video.ViewCount,
+			"favorite_count":  video.FavoriteCount,
+			"state":           video.State,
+			"out_of_print_at": formatChangedEventTime(video.OutOfPrintAt),
+			"stable_at":       formatChangedEventTime(video.StableAt),
+			"last_check_at":   formatChangedEventTime(video.LastCheckAt),
+		},
+	})
+}
+
+func (h *DefaultHandler) publishStorageChanged(ctx context.Context) {
+	if h.publisher == nil || h.storageRoot == "" {
+		return
+	}
+	usedBytes, fileCount, err := scanStorageUsage(h.storageRoot)
+	if err != nil {
+		h.logger.Printf("发布 storage.changed 失败: %v", err)
+		return
+	}
+
+	var rareVideos int64
+	if h.videos != nil {
+		rareVideos, err = h.videos.CountByState(ctx, "OUT_OF_PRINT")
+		if err != nil {
+			h.logger.Printf("统计绝版视频失败: %v", err)
+			return
+		}
+	}
+
+	at := h.now()
+	h.publisher.Publish(live.Event{
+		ID:   fmt.Sprintf("storage-%d", at.UnixNano()),
+		Type: "storage.changed",
+		At:   at,
+		Payload: map[string]any{
+			"root_dir":       h.storageRoot,
+			"used_bytes":     usedBytes,
+			"max_bytes":      h.storageMax,
+			"safe_bytes":     h.storageSafe,
+			"usage_percent":  percent(usedBytes, h.storageMax),
+			"file_count":     fileCount,
+			"rare_videos":    rareVideos,
+			"cleanup_rule":   "绝版优先 -> 粉丝量 -> 播放量 -> 收藏量",
+			"hottest_bucket": "-",
+		},
+	})
+}
+
+func shouldPublishVideoChanged(prev, next string) bool {
+	if prev == next {
+		return false
+	}
+	return next == "OUT_OF_PRINT" || next == "STABLE" || next == "DELETED"
+}
+
+func percent(used, max int64) int {
+	if max <= 0 {
+		return 0
+	}
+	p := int((used * 100) / max)
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	return p
+}
+
+func formatChangedEventTime(v time.Time) string {
+	if v.IsZero() {
+		return ""
+	}
+	return v.Format(time.RFC3339)
 }

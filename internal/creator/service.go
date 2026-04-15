@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
+	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/repo"
 )
 
@@ -24,10 +26,16 @@ type Patch struct {
 	Status *string
 }
 
+type EventPublisher interface {
+	Publish(evt live.Event)
+}
+
 type Service struct {
-	repo     repo.CreatorRepository
-	resolver Resolver
-	logger   *log.Logger
+	repo      repo.CreatorRepository
+	resolver  Resolver
+	logger    *log.Logger
+	publisher EventPublisher
+	now       func() time.Time
 }
 
 func NewService(repo repo.CreatorRepository, resolver Resolver, logger *log.Logger) *Service {
@@ -38,7 +46,12 @@ func NewService(repo repo.CreatorRepository, resolver Resolver, logger *log.Logg
 		repo:     repo,
 		resolver: resolver,
 		logger:   logger,
+		now:      time.Now,
 	}
+}
+
+func (s *Service) SetPublisher(publisher EventPublisher) {
+	s.publisher = publisher
 }
 
 func (s *Service) Upsert(ctx context.Context, entry Entry) (repo.Creator, error) {
@@ -52,6 +65,7 @@ func (s *Service) Upsert(ctx context.Context, entry Entry) (repo.Creator, error)
 		return repo.Creator{}, err
 	}
 	creator.ID = id
+	s.publishCreatorChanged(creator)
 	return creator, nil
 }
 
@@ -147,6 +161,7 @@ func (s *Service) Patch(ctx context.Context, id int64, patch Patch) (repo.Creato
 	if err := s.repo.Update(ctx, current); err != nil {
 		return repo.Creator{}, err
 	}
+	s.publishCreatorChanged(current)
 	return current, nil
 }
 
@@ -168,7 +183,12 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 	if current.Status == "removed" {
 		return nil
 	}
-	return s.repo.UpdateStatus(ctx, id, "removed")
+	if err := s.repo.UpdateStatus(ctx, id, "removed"); err != nil {
+		return err
+	}
+	current.Status = "removed"
+	s.publishCreatorChanged(current)
+	return nil
 }
 
 func (s *Service) upsertFromFile(ctx context.Context, entry Entry) (repo.Creator, bool, error) {
@@ -192,6 +212,7 @@ func (s *Service) upsertFromFile(ctx context.Context, entry Entry) (repo.Creator
 		return repo.Creator{}, false, err
 	}
 	creator.ID = id
+	s.publishCreatorChanged(creator)
 	return creator, false, nil
 }
 
@@ -239,6 +260,41 @@ func (s *Service) backfillCreatorNames(ctx context.Context, creators []repo.Crea
 		}
 		if err := s.repo.Update(ctx, creators[idx]); err != nil {
 			s.logger.Printf("回填博主名称入库失败 id=%d uid=%s: %v", creators[idx].ID, creators[idx].UID, err)
+			continue
 		}
+		s.publishCreatorChanged(creators[idx])
 	}
+}
+
+func (s *Service) publishCreatorChanged(creator repo.Creator) {
+	if s.publisher == nil {
+		return
+	}
+	creator = normalizeCreatorForEvent(creator)
+	at := s.now()
+	if !creator.UpdatedAt.IsZero() {
+		at = creator.UpdatedAt
+	}
+	s.publisher.Publish(live.Event{
+		ID:   fmt.Sprintf("creator-%d-%d", creator.ID, at.UnixNano()),
+		Type: "creator.changed",
+		At:   at,
+		Payload: map[string]any{
+			"id":       creator.ID,
+			"uid":      creator.UID,
+			"name":     creator.Name,
+			"platform": creator.Platform,
+			"status":   creator.Status,
+		},
+	})
+}
+
+func normalizeCreatorForEvent(creator repo.Creator) repo.Creator {
+	if creator.Platform == "" {
+		creator.Platform = "bilibili"
+	}
+	if creator.Status == "" {
+		creator.Status = "active"
+	}
+	return creator
 }

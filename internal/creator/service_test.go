@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/repo"
 )
 
@@ -150,6 +151,35 @@ func (s *stubResolver) ResolveName(ctx context.Context, uid string) (string, err
 		return "", nil
 	}
 	return s.nameByUID[uid], nil
+}
+
+type stubCreatorEventPublisher struct {
+	events []live.Event
+}
+
+func (s *stubCreatorEventPublisher) Publish(evt live.Event) {
+	s.events = append(s.events, evt)
+}
+
+func mustFindCreatorChangedEvent(t *testing.T, events []live.Event) live.Event {
+	t.Helper()
+
+	for _, evt := range events {
+		if evt.Type == "creator.changed" {
+			return evt
+		}
+	}
+	t.Fatalf("expected creator.changed event, got %+v", events)
+	return live.Event{}
+}
+
+func assertCreatorChangedPayloadShape(t *testing.T, payload map[string]any) {
+	t.Helper()
+	for _, key := range []string{"id", "uid", "name", "platform", "status"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("expected creator.changed payload key %q", key)
+		}
+	}
 }
 
 func TestServiceUpsertByUID(t *testing.T) {
@@ -408,5 +438,116 @@ func TestServiceUpsertFromFileSkipsRemovedCreator(t *testing.T) {
 	}
 	if creator.ID != 7 || repoStub.count != 0 {
 		t.Fatalf("expected removed creator kept untouched, creator=%+v count=%d", creator, repoStub.count)
+	}
+}
+
+func TestServiceUpsertPublishesCreatorEvent(t *testing.T) {
+	repoStub := &stubRepo{}
+	publisher := &stubCreatorEventPublisher{}
+	svc := NewService(repoStub, nil, nil)
+	svc.SetPublisher(publisher)
+
+	creator, err := svc.Upsert(context.Background(), Entry{UID: "123", Name: "name"})
+	if err != nil {
+		t.Fatalf("upsert error: %v", err)
+	}
+
+	evt := mustFindCreatorChangedEvent(t, publisher.events)
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	assertCreatorChangedPayloadShape(t, payload)
+	if got := payload["id"]; got != creator.ID {
+		t.Fatalf("expected id=%d, got %v", creator.ID, got)
+	}
+	if got := payload["status"]; got != "active" {
+		t.Fatalf("expected active status, got %v", got)
+	}
+}
+
+func TestServicePatchPublishesCreatorEvent(t *testing.T) {
+	repoStub := &stubRepo{
+		creators: map[int64]repo.Creator{
+			7: {ID: 7, UID: "777", Name: "old", Status: "active", Platform: "bilibili"},
+		},
+	}
+	publisher := &stubCreatorEventPublisher{}
+	svc := NewService(repoStub, nil, nil)
+	svc.SetPublisher(publisher)
+	status := "paused"
+
+	_, err := svc.Patch(context.Background(), 7, Patch{Status: &status})
+	if err != nil {
+		t.Fatalf("patch error: %v", err)
+	}
+
+	evt := mustFindCreatorChangedEvent(t, publisher.events)
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	assertCreatorChangedPayloadShape(t, payload)
+	if got := payload["status"]; got != "paused" {
+		t.Fatalf("expected paused status, got %v", got)
+	}
+}
+
+func TestServiceDeletePublishesCreatorEvent(t *testing.T) {
+	repoStub := &stubRepo{
+		creators: map[int64]repo.Creator{
+			7: {ID: 7, UID: "777", Name: "old", Status: "active", Platform: "bilibili"},
+		},
+	}
+	publisher := &stubCreatorEventPublisher{}
+	svc := NewService(repoStub, nil, nil)
+	svc.SetPublisher(publisher)
+
+	if err := svc.Delete(context.Background(), 7); err != nil {
+		t.Fatalf("delete error: %v", err)
+	}
+
+	evt := mustFindCreatorChangedEvent(t, publisher.events)
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	assertCreatorChangedPayloadShape(t, payload)
+	if got := payload["status"]; got != "removed" {
+		t.Fatalf("expected removed status, got %v", got)
+	}
+}
+
+func TestServiceListActiveBackfillNamePublishesCreatorEvent(t *testing.T) {
+	repoStub := &stubRepo{
+		list: []repo.Creator{
+			{ID: 1, UID: "123", Platform: "bilibili", Status: "active"},
+		},
+		creators: map[int64]repo.Creator{
+			1: {ID: 1, UID: "123", Platform: "bilibili", Status: "active"},
+		},
+	}
+	resolver := &stubResolver{
+		nameByUID: map[string]string{
+			"123": "resolved-name",
+		},
+	}
+	publisher := &stubCreatorEventPublisher{}
+	svc := NewService(repoStub, resolver, nil)
+	svc.SetPublisher(publisher)
+
+	_, err := svc.ListActive(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("list active error: %v", err)
+	}
+
+	evt := mustFindCreatorChangedEvent(t, publisher.events)
+	payload, ok := evt.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %T", evt.Payload)
+	}
+	assertCreatorChangedPayloadShape(t, payload)
+	if got := payload["name"]; got != "resolved-name" {
+		t.Fatalf("expected resolved name, got %v", got)
 	}
 }

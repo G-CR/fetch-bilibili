@@ -140,6 +140,7 @@ func New(cfg config.Config) (*App, error) {
 
 	client := bilibili.New(cfg.Bilibili, nil)
 	creatorService := creator.NewService(repos.Creators, client, nil)
+	creatorService.SetPublisher(broker)
 	handler := worker.NewDefaultHandler(
 		repos.Creators,
 		repos.Videos,
@@ -152,6 +153,7 @@ func New(cfg config.Config) (*App, error) {
 		cfg.Limits.PerCreatorQPS,
 		nil,
 	)
+	handler.SetPublisher(broker)
 	handler.SetStoragePolicy(cfg.Storage.MaxBytes, cfg.Storage.SafeBytes, cfg.Storage.KeepOutOfPrint)
 	handler.SetCleanupRetention(cfg.Storage.CleanupRetentionHours)
 	pool := newWorker(repos.Jobs, handler, cfg.Limits.DownloadConcurrency, 2*time.Second, broker)
