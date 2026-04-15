@@ -1,6 +1,6 @@
 # 项目 TODO（动态更新）
 
-最后更新时间：2026-04-15（已完成“实时驾驶舱 SSE 与低频对账”的联调，继续推进“存储投影层与人工浏览目录”）
+最后更新时间：2026-04-15（已完成“存储投影层与人工浏览目录”的代码闭环，下一优先级进入多平台扩展）
 
 说明：
 - 本文档用于维护当前项目的实施优先级、执行状态和下一步动作。
@@ -171,7 +171,7 @@
     - `cd frontend && npm run test:e2e` 通过（`mock` 模式）
     - `cd frontend && E2E_MODE=live E2E_BASE_URL=http://127.0.0.1:5173 E2E_API_BASE=http://127.0.0.1:8080 npm run test:e2e` 通过（`live` 模式）
 
-- [ ] `doing` 存储投影层与人工浏览目录
+- [x] `done` 存储投影层与人工浏览目录
   - 目标：将数据库继续作为唯一信源，把真实文件落盘与人工浏览目录解耦，按平台 / 博主 / 普通视频 / 绝版视频组织浏览视图。
   - 设计要点：
     - 真实文件进入 `store/` 主存储目录
@@ -186,11 +186,14 @@
     - 已新增 `internal/library` 基础投影层，覆盖主存储路径、浏览目录路径、符号链接投影、`creator.json` / `index.json` 原子写入、博主改名旧目录清理
     - 已把真实文件路径切换到 `storage.root_dir/store/{platform}/{video_id}.mp4`
     - 已同步修复下载、启动恢复、缺失文件修复、cleanup 容量统计和 dashboard 存储统计对 `store/` 的识别
-    - 已通过验证：`go test ./internal/library ./internal/worker ./internal/app ./internal/dashboard -count=1`
-  - 当前进行中：
-    - 接入投影层实时通知
-    - 增加按博主重建的队列与幂等保护
-    - 增加仓储查询与启动 / 定时全量重建
+    - 已实现投影层导出器与按博主重建队列，消费 `creator.changed` / `video.changed` 做增量重建
+    - 已实现启动时全量重建与默认每 6 小时一次全量对账
+    - 已实现无本地库存时自动移除博主浏览目录，避免保留空目录
+    - 已补运行文档、配置文档、数据模型文档，对 `store/` / `library/` 边界做明确说明
+  - 验证情况：
+    - `go test ./internal/library ./internal/repo/mysql -count=1` 已通过
+    - `go test ./internal/library ./internal/worker ./internal/app ./internal/dashboard ./internal/creator -count=1` 已通过
+    - `go test ./... -count=1` 已通过
   - 结果要求：
     - 业务层只认数据库和主存储
     - 投影层失败不阻塞主流程
@@ -210,6 +213,5 @@
 
 ## 当前推荐执行顺序
 
-1. 存储投影层与人工浏览目录
-2. 多平台扩展
-3. App 化
+1. 多平台扩展
+2. App 化

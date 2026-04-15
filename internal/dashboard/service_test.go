@@ -36,6 +36,9 @@ func (s stubCreatorRepo) ListActive(context.Context, int) ([]repo.Creator, error
 func (s stubCreatorRepo) ListActiveAfter(context.Context, int64, int) ([]repo.Creator, error) {
 	return nil, nil
 }
+func (s stubCreatorRepo) ListForLibraryAfter(context.Context, int64, int) ([]repo.Creator, error) {
+	return nil, nil
+}
 func (s stubCreatorRepo) CountActive(context.Context) (int64, error) {
 	return s.count, s.err
 }
@@ -74,6 +77,9 @@ func (s *stubVideoRepo) ListRecent(context.Context, repo.VideoListFilter) ([]rep
 		return nil, s.listErr
 	}
 	return append([]repo.Video(nil), s.list...), nil
+}
+func (s *stubVideoRepo) ListLibraryByCreator(context.Context, int64) ([]repo.LibraryVideo, error) {
+	return nil, nil
 }
 func (s *stubVideoRepo) ListCleanupCandidates(context.Context, repo.CleanupCandidateFilter) ([]repo.CleanupCandidate, error) {
 	return nil, nil

@@ -55,6 +55,10 @@ func (f *fakeCreators) ListActiveAfter(ctx context.Context, lastID int64, limit 
 	return f.list, f.err
 }
 
+func (f *fakeCreators) ListForLibraryAfter(ctx context.Context, lastID int64, limit int) ([]repo.Creator, error) {
+	return f.list, f.err
+}
+
 func (f *fakeCreators) CountActive(ctx context.Context) (int64, error) {
 	if f.err != nil {
 		return 0, f.err
@@ -261,6 +265,10 @@ func (f *fakeVideos) UpdateCheckStatus(ctx context.Context, id int64, state stri
 
 func (f *fakeVideos) ListRecent(ctx context.Context, filter repo.VideoListFilter) ([]repo.Video, error) {
 	return f.list, f.listErr
+}
+
+func (f *fakeVideos) ListLibraryByCreator(ctx context.Context, creatorID int64) ([]repo.LibraryVideo, error) {
+	return nil, repo.ErrNotImplemented
 }
 
 func (f *fakeVideos) ListCleanupCandidates(ctx context.Context, filter repo.CleanupCandidateFilter) ([]repo.CleanupCandidate, error) {

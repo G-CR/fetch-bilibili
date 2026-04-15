@@ -43,6 +43,12 @@ type VideoFile struct {
 	CreatedAt time.Time
 }
 
+type LibraryVideo struct {
+	Video     Video
+	FilePath  string
+	SizeBytes int64
+}
+
 type CleanupCandidate struct {
 	VideoID              int64
 	SourceVideoID        string

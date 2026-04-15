@@ -250,6 +250,46 @@ func TestProjectorRebuildRenamesCreatorDirectoryAndCleansLegacyDir(t *testing.T)
 	}
 }
 
+func TestProjectorRebuildRemovesCreatorDirectoryWhenNoProjectedVideos(t *testing.T) {
+	root := t.TempDir()
+	projector := NewProjector(root)
+
+	existingDir := filepath.Join(root, "library", "bilibili", "creators", "352981594_旧目录")
+	if err := os.MkdirAll(filepath.Join(existingDir, "_meta"), 0o755); err != nil {
+		t.Fatalf("mkdir existing dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existingDir, "_meta", "creator.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("seed creator json: %v", err)
+	}
+
+	snapshot := CreatorSnapshot{
+		Platform: "bilibili",
+		UID:      "352981594",
+		Name:     "没有本地视频",
+		Videos: []VideoSnapshot{
+			{
+				VideoID:  "BV-empty",
+				Title:    "未下载视频",
+				State:    StateNew,
+				FilePath: StoreVideoPath(root, "bilibili", "BV-empty"),
+			},
+		},
+	}
+
+	if err := projector.RebuildCreator(context.Background(), snapshot); err != nil {
+		t.Fatalf("rebuild creator: %v", err)
+	}
+
+	if _, err := os.Stat(existingDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected creator dir removed when no projected videos, got err=%v", err)
+	}
+
+	currentDir := CreatorDirectoryPath(root, snapshot)
+	if _, err := os.Stat(currentDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected current creator dir absent, got err=%v", err)
+	}
+}
+
 func seedStoreFile(t *testing.T, root, platform, videoID, content string) string {
 	t.Helper()
 	path := StoreVideoPath(root, platform, videoID)
@@ -268,8 +308,12 @@ func assertSymlinkTarget(t *testing.T, path, want string) {
 	if err != nil {
 		t.Fatalf("readlink %s: %v", path, err)
 	}
-	if target != want {
-		t.Fatalf("expected symlink %s -> %s, got %s", path, want, target)
+	if filepath.IsAbs(target) {
+		t.Fatalf("expected relative symlink %s, got absolute target %s", path, target)
+	}
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(path), target))
+	if resolved != want {
+		t.Fatalf("expected symlink %s -> %s, got %s (resolved %s)", path, want, target, resolved)
 	}
 }
 

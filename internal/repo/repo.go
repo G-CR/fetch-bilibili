@@ -15,6 +15,7 @@ type CreatorRepository interface {
 	FindByPlatformUID(ctx context.Context, platform, uid string) (Creator, error)
 	ListActive(ctx context.Context, limit int) ([]Creator, error)
 	ListActiveAfter(ctx context.Context, lastID int64, limit int) ([]Creator, error)
+	ListForLibraryAfter(ctx context.Context, lastID int64, limit int) ([]Creator, error)
 	CountActive(ctx context.Context) (int64, error)
 }
 
@@ -24,6 +25,7 @@ type VideoRepository interface {
 	FindByID(ctx context.Context, id int64) (Video, error)
 	ListForCheck(ctx context.Context, limit int) ([]Video, error)
 	ListRecent(ctx context.Context, filter VideoListFilter) ([]Video, error)
+	ListLibraryByCreator(ctx context.Context, creatorID int64) ([]LibraryVideo, error)
 	ListCleanupCandidates(ctx context.Context, filter CleanupCandidateFilter) ([]CleanupCandidate, error)
 	CountByState(ctx context.Context, state string) (int64, error)
 	UpdateCheckStatus(ctx context.Context, id int64, state string, outOfPrintAt *time.Time, stableAt *time.Time, lastCheckAt time.Time) error

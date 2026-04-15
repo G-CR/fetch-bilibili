@@ -224,6 +224,47 @@ func (r *creatorRepo) ListActiveAfter(ctx context.Context, lastID int64, limit i
 	return out, nil
 }
 
+func (r *creatorRepo) ListForLibraryAfter(ctx context.Context, lastID int64, limit int) ([]repo.Creator, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT c.id, c.platform, c.uid, c.name, c.follower_count, c.status, c.created_at, c.updated_at
+		FROM creators c
+		INNER JOIN videos v ON v.creator_id = c.id
+		INNER JOIN video_files vf ON vf.video_id = v.id AND vf.type = 'video'
+		WHERE c.id > ?
+			AND v.state IN ('DOWNLOADED', 'STABLE', 'OUT_OF_PRINT')
+		ORDER BY c.id ASC
+		LIMIT ?
+	`, lastID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []repo.Creator
+	for rows.Next() {
+		var c repo.Creator
+		var name sql.NullString
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&c.ID, &c.Platform, &c.UID, &name, &c.FollowerCount, &c.Status, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		if name.Valid {
+			c.Name = name.String
+		}
+		c.CreatedAt = createdAt
+		c.UpdatedAt = updatedAt
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *creatorRepo) CountActive(ctx context.Context) (int64, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM creators WHERE status = 'active'

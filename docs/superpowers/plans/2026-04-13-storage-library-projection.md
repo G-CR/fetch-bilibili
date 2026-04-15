@@ -47,10 +47,10 @@
 - 修改：`internal/creator/service.go`
 - 修改：`internal/worker/handler.go`
 
-- [ ] **步骤 1：实现按博主重建浏览目录、符号链接和 `_meta/*.json` 的核心逻辑**
-- [ ] **步骤 2：在博主新增 / 更新、下载成功、状态变更、cleanup 删除后发送投影通知**
-- [ ] **步骤 3：为单博主重建增加目录级锁和原子写入保护**
-- [ ] **步骤 4：运行投影层测试，验证重复通知和并发重建的幂等性**
+- [x] **步骤 1：实现按博主重建浏览目录、符号链接和 `_meta/*.json` 的核心逻辑**
+- [x] **步骤 2：在博主新增 / 更新、下载成功、状态变更、cleanup 删除后发送投影通知**
+- [x] **步骤 3：为单博主重建增加目录级锁和原子写入保护**
+- [x] **步骤 4：运行投影层测试，验证重复通知和并发重建的幂等性**
 
 ### 任务 4：补仓储查询与全量重建能力
 
@@ -63,10 +63,10 @@
 - 修改：`internal/repo/mysql/creator_repo_test.go`
 - 修改：`internal/library/projector.go`
 
-- [ ] **步骤 1：新增“按博主列出当前本地库存视频”的仓储查询**
-- [ ] **步骤 2：新增“列出全部活跃博主用于全量重建”的仓储扫描能力**
-- [ ] **步骤 3：实现 `RebuildAll`，用于启动时和定时对账时重建投影目录**
-- [ ] **步骤 4：验证全量重建可以修复丢失链接、脏目录和缺失 `json`**
+- [x] **步骤 1：新增“按博主列出当前本地库存视频”的仓储查询**
+- [x] **步骤 2：新增“列出全部活跃博主用于全量重建”的仓储扫描能力**
+- [x] **步骤 3：实现 `RebuildAll`，用于启动时和定时对账时重建投影目录**
+- [x] **步骤 4：验证全量重建可以修复丢失链接、脏目录和缺失 `json`**
 
 ### 任务 5：接入启动重建、运维入口与文档
 
@@ -80,18 +80,18 @@
 - 修改：`docs/data-model.md`
 - 修改：`docs/superpowers/plans/2026-04-13-storage-library-projection.md`
 
-- [ ] **步骤 1：在应用启动后执行一次投影全量重建**
-- [ ] **步骤 2：补运行文档，说明 `store/` 与 `library/` 的职责边界**
-- [ ] **步骤 3：补运维说明，明确浏览目录和 `json` 不作为业务真源**
-- [ ] **步骤 4：更新动态 TODO 和本计划状态**
+- [x] **步骤 1：在应用启动后执行一次投影全量重建**
+- [x] **步骤 2：补运行文档，说明 `store/` 与 `library/` 的职责边界**
+- [x] **步骤 3：补运维说明，明确浏览目录和 `json` 不作为业务真源**
+- [x] **步骤 4：更新动态 TODO 和本计划状态**
 
 ### 任务 6：完整验证
 
 **文件：**
 - 修改：`docs/superpowers/plans/2026-04-13-storage-library-projection.md`
 
-- [ ] **步骤 1：运行 `go test ./internal/library ./internal/worker ./internal/app -count=1`**
-- [ ] **步骤 2：运行 `go test ./... -count=1`**
+- [x] **步骤 1：运行 `go test ./internal/library ./internal/worker ./internal/app -count=1`**
+- [x] **步骤 2：运行 `go test ./... -count=1`**
 - [ ] **步骤 3：在容器内验证下载成功后 `store/` 与 `library/` 同步更新**
 - [ ] **步骤 4：验证博主改名后浏览目录重建成功，旧目录被清理**
 
@@ -100,10 +100,16 @@
 - 本轮已确认“数据库真源 + 主存储 + 浏览投影”的设计方向。
 - 已完成任务 1：落地 `internal/library` 路径 / 快照 / 投影器基础能力，并用失败测试锁定路径、目录投影、元数据原子写入和改名清理行为。
 - 已完成任务 2：主存储真实文件路径切换到 `storage.root_dir/store/{platform}/{video_id}.mp4`，并同步修复下载、启动恢复、缺失文件检查、cleanup 统计和仪表盘存储统计。
-- 计划将当前扁平落盘路径升级为：
+- 已完成任务 3：补齐 `internal/library/export.go` / `internal/library/queue.go`，接入 `creator.changed` / `video.changed` 实时通知，并通过按博主队列避免重复重建。
+- 已完成任务 4：补齐仓储层 `ListLibraryByCreator` / `ListForLibraryAfter`，支持启动重建和全量对账，并在无本地库存时清理空博主目录。
+- 已完成任务 5：应用启动时先执行一次浏览目录全量重建，再启动实时同步；运行、配置、数据模型和动态 TODO 文档已同步更新。
+- 当前落盘结构已升级为：
   - `store/`：真实文件
   - `library/`：符号链接与 `json` 视图
-- 后续实现重点是：
-  - 保持业务链路稳定
-  - 让投影层失败不影响主流程
-  - 通过启动重建和定时对账保证最终一致
+- 已完成验证：
+  - `go test ./internal/library ./internal/repo/mysql -count=1`
+  - `go test ./internal/library ./internal/worker ./internal/app ./internal/dashboard ./internal/creator -count=1`
+  - `go test ./... -count=1`
+- 剩余待环境联调项：
+  - 在容器内验证下载成功后 `store/` 与 `library/` 实时同步
+  - 验证博主改名后的浏览目录迁移与旧目录清理

@@ -131,6 +131,22 @@ func (s *stubRepo) ListActiveAfter(ctx context.Context, lastID int64, limit int)
 	return out, nil
 }
 
+func (s *stubRepo) ListForLibraryAfter(ctx context.Context, lastID int64, limit int) ([]repo.Creator, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	var out []repo.Creator
+	for _, c := range s.list {
+		if c.ID > lastID {
+			out = append(out, c)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (s *stubRepo) CountActive(ctx context.Context) (int64, error) {
 	if s.listErr != nil {
 		return 0, s.listErr

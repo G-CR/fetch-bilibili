@@ -277,6 +277,44 @@ func TestVideoListCleanupCandidates(t *testing.T) {
 	}
 }
 
+func TestVideoListLibraryByCreator(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+	created := time.Now().Add(-time.Hour)
+	updated := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "platform", "video_id", "creator_id", "title", "description", "publish_time", "duration", "cover_url",
+		"view_count", "favorite_count", "state", "out_of_print_at", "stable_at", "last_check_at", "created_at", "updated_at",
+		"file_path", "size_bytes",
+	}).AddRow(
+		int64(1), "bilibili", "BV1", int64(2), "标题", "描述", created, 10, "cover",
+		int64(11), int64(12), "DOWNLOADED", nil, nil, nil, created, updated, "/data/store/bilibili/BV1.mp4", int64(1234),
+	)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT v.id, v.platform, v.video_id")).
+		WithArgs(int64(2)).
+		WillReturnRows(rows)
+
+	list, err := repoImpl.Videos().ListLibraryByCreator(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("list library by creator: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(list))
+	}
+	if list[0].FilePath != "/data/store/bilibili/BV1.mp4" || list[0].SizeBytes != 1234 {
+		t.Fatalf("unexpected library row: %+v", list[0])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
 func TestVideoListCleanupCandidatesIncludeOutOfPrint(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

@@ -22,7 +22,6 @@
 - cover_url
 - view_count
 - favorite_count
-- stats_json (其他统计，JSON)
 - state (NEW/DOWNLOADING/DOWNLOADED/OUT_OF_PRINT/STABLE/DELETED)
 - out_of_print_at
 - stable_at
@@ -32,7 +31,7 @@
 ### 1.3 video_files（视频文件）
 - id (pk)
 - video_id (fk)
-- path
+- path（真实文件路径，指向 `storage.root_dir/store/...`）
 - size_bytes
 - checksum
 - type (video/cover/subtitle/other)
@@ -46,6 +45,7 @@
 - error_message
 - not_before
 - started_at, finished_at
+- created_at, updated_at
 
 ### 1.5 check_history（下架检查历史）
 - id (pk)
@@ -53,6 +53,13 @@
 - checked_at
 - result (available/unavailable/error)
 - detail_json
+
+### 1.6 storage_reports（清理报告）
+- id (pk)
+- total_bytes
+- freed_bytes
+- deleted_count
+- created_at
 
 ## 2. 状态机与规则
 - NEW：发现但未下载。
@@ -70,3 +77,14 @@
 - videos: (creator_id, publish_time)
 - videos: (state)
 - check_history: (video_id, checked_at)
+
+## 4. 存储与投影约束
+- 数据库和 `store/` 主存储是真实业务状态。
+- `video_files.path` 必须指向 `store/` 中的真实文件，而不是 `library/` 中的符号链接。
+- `library/` 浏览目录不单独建表，它完全由数据库和 `store/` 派生出来。
+- `library/` 中每个博主目录会实时生成：
+  - `_meta/creator.json`
+  - `_meta/index.json`
+  - `videos/` 普通库存链接
+  - `rare/` 绝版库存链接
+- cleanup 删除真实文件后，投影层会同步移除对应符号链接和索引记录。

@@ -57,6 +57,10 @@ func (r *recoveryVideoRepo) ListRecent(_ context.Context, filter repo.VideoListF
 	return out, nil
 }
 
+func (r *recoveryVideoRepo) ListLibraryByCreator(context.Context, int64) ([]repo.LibraryVideo, error) {
+	panic("unexpected call to ListLibraryByCreator")
+}
+
 func (r *recoveryVideoRepo) ListCleanupCandidates(context.Context, repo.CleanupCandidateFilter) ([]repo.CleanupCandidate, error) {
 	panic("unexpected call to ListCleanupCandidates")
 }

@@ -266,6 +266,42 @@ func (r *videoRepo) ListRecent(ctx context.Context, filter repo.VideoListFilter)
 	return out, nil
 }
 
+func (r *videoRepo) ListLibraryByCreator(ctx context.Context, creatorID int64) ([]repo.LibraryVideo, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT v.id, v.platform, v.video_id, v.creator_id, v.title, v.description, v.publish_time, v.duration, v.cover_url,
+			v.view_count, v.favorite_count, v.state, v.out_of_print_at, v.stable_at, v.last_check_at, v.created_at, v.updated_at,
+			vf.path AS file_path, vf.size_bytes
+		FROM videos v
+		INNER JOIN (
+			SELECT video_id, MAX(id) AS latest_id
+			FROM video_files
+			WHERE type = 'video'
+			GROUP BY video_id
+		) latest_vf ON latest_vf.video_id = v.id
+		INNER JOIN video_files vf ON vf.id = latest_vf.latest_id
+		WHERE v.creator_id = ?
+			AND v.state IN ('DOWNLOADED', 'STABLE', 'OUT_OF_PRINT')
+		ORDER BY v.publish_time DESC, v.id DESC
+	`, creatorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []repo.LibraryVideo
+	for rows.Next() {
+		item, err := scanLibraryVideo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *videoRepo) ListCleanupCandidates(ctx context.Context, filter repo.CleanupCandidateFilter) ([]repo.CleanupCandidate, error) {
 	limit := filter.Limit
 	if limit <= 0 {
@@ -406,4 +442,57 @@ func scanVideo(scanner interface {
 	v.CreatedAt = createdAt
 	v.UpdatedAt = updatedAt
 	return v, nil
+}
+
+func scanLibraryVideo(scanner interface {
+	Scan(dest ...any) error
+}) (repo.LibraryVideo, error) {
+	var (
+		item                      repo.LibraryVideo
+		description               sql.NullString
+		publishTime, outOfPrintAt sql.NullTime
+		stableAt, lastCheckAt     sql.NullTime
+		createdAt, updatedAt      time.Time
+	)
+	if err := scanner.Scan(
+		&item.Video.ID,
+		&item.Video.Platform,
+		&item.Video.VideoID,
+		&item.Video.CreatorID,
+		&item.Video.Title,
+		&description,
+		&publishTime,
+		&item.Video.Duration,
+		&item.Video.CoverURL,
+		&item.Video.ViewCount,
+		&item.Video.FavoriteCount,
+		&item.Video.State,
+		&outOfPrintAt,
+		&stableAt,
+		&lastCheckAt,
+		&createdAt,
+		&updatedAt,
+		&item.FilePath,
+		&item.SizeBytes,
+	); err != nil {
+		return repo.LibraryVideo{}, err
+	}
+	if description.Valid {
+		item.Video.Description = description.String
+	}
+	if publishTime.Valid {
+		item.Video.PublishTime = publishTime.Time
+	}
+	if outOfPrintAt.Valid {
+		item.Video.OutOfPrintAt = outOfPrintAt.Time
+	}
+	if stableAt.Valid {
+		item.Video.StableAt = stableAt.Time
+	}
+	if lastCheckAt.Valid {
+		item.Video.LastCheckAt = lastCheckAt.Time
+	}
+	item.Video.CreatedAt = createdAt
+	item.Video.UpdatedAt = updatedAt
+	return item, nil
 }

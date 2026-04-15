@@ -1,11 +1,12 @@
 # 配置设计（Go 服务）
 
-本配置用于单机后端服务，支持环境变量或配置文件（YAML/JSON/TOML）加载。
+本配置用于单机后端服务，当前通过配置文件加载，支持 YAML/JSON；可通过 `FETCH_CONFIG` 指定配置文件路径。
 
 ## 1. 配置原则
 - 所有时间以秒/分钟/天为单位，统一换算为 `duration`。
 - 重要参数提供默认值，便于快速启动。
 - 清理权重可配置，默认比例 10:8:6。
+- `storage.root_dir` 只配置一次，服务会在该目录下自动维护 `store/` 和 `library/` 两套子目录。
 
 ## 2. 配置示例（YAML）
 ```yaml
@@ -80,10 +81,13 @@ logging:
 
 ### 3.2 storage
 - `root_dir`：本地存储根目录。
+- 服务会在其下自动维护：
+  - `store/`：真实文件目录
+  - `library/`：人工浏览投影目录
 - `max_bytes`：最大容量。
 - `safe_bytes`：清理后安全容量，建议为 `max_bytes * 0.9`。
 - `keep_out_of_print`：是否强制保留绝版。
-- `cleanup_retention_hours`：视频下载成功后，至少保留多少小时才允许被 cleanup 删除，默认 168 小时。
+- `cleanup_retention_hours`：视频下载成功后，真实文件在 `store/` 中至少保留多少小时才允许被 cleanup 删除，默认 168 小时。
 - `delete_weights`：清理评分权重（可配置）。
 
 ### 3.3 scheduler
@@ -116,6 +120,12 @@ creators:
 - 如果某个博主已通过 HTTP 删除接口被手工移除（status=removed），文件同步不会将其自动恢复。
 - 如需恢复已手工移除的博主，请再次通过 `POST /creators` 添加相同 UID。
 
+### 3.5.1 浏览目录同步
+- 浏览目录不是单独配置项，默认复用 `storage.root_dir`。
+- 启动时会先做一次全量重建。
+- 运行中通过 `creator.changed` / `video.changed` 事件按博主增量重建。
+- 当前版本内置每 6 小时一次全量对账，用于修复投影偏差；该周期暂未暴露为配置项。
+
 ### 3.6 bilibili
 - `resolve_name_cache_ttl`：名称解析为 UID 的缓存时间。
 - `request_timeout`：请求超时。
@@ -140,5 +150,8 @@ creators:
 - `output`：输出位置（stdout/file）。
 
 ## 4. 配置加载建议
-- 默认支持 `config.yaml`，并允许环境变量覆盖（如 `FETCH_SERVER_ADDR`）。
+- 默认配置文件路径是 `configs/config.yaml`。
+- 可通过 `FETCH_CONFIG=/path/to/config.yaml` 指定其它配置文件。
+- 当前不支持逐字段环境变量覆盖；需要修改运行配置时，请直接编辑配置文件或调用 `PUT /system/config`。
+- 已废弃的 `bilibili.cookie_file` / `bilibili.sessdata_file` 会在启动时直接报错。
 - 关键配置缺失时（如 `storage.root_dir`、`mysql.dsn`）启动失败并给出提示。

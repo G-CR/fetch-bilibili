@@ -259,6 +259,35 @@ func TestCreatorListActiveAfter(t *testing.T) {
 	}
 }
 
+func TestCreatorListForLibraryAfter(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+	created := time.Now().Add(-time.Hour)
+	updated := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "platform", "uid", "name", "follower_count", "status", "created_at", "updated_at"}).
+		AddRow(4, "bilibili", "1001", "目录博主", 10, "paused", created, updated)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT c.id, c.platform, c.uid")).
+		WithArgs(int64(3), 2).
+		WillReturnRows(rows)
+
+	list, err := repoImpl.Creators().ListForLibraryAfter(context.Background(), 3, 2)
+	if err != nil {
+		t.Fatalf("list for library after: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != 4 || list[0].Status != "paused" {
+		t.Fatalf("unexpected list: %+v", list)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
 func TestCreatorListActiveQueryError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

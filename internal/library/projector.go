@@ -52,8 +52,12 @@ func (p *Projector) RebuildCreator(ctx context.Context, snapshot CreatorSnapshot
 	}
 
 	creatorDir := CreatorDirectoryPath(p.root, snapshot)
+	projected := collectProjectedVideos(snapshot)
 	if err := p.removeLegacyCreatorDirs(snapshot, creatorDir); err != nil {
 		return err
+	}
+	if len(projected) == 0 {
+		return os.RemoveAll(creatorDir)
 	}
 	if err := os.MkdirAll(filepath.Join(creatorDir, "_meta"), 0o755); err != nil {
 		return err
@@ -66,7 +70,6 @@ func (p *Projector) RebuildCreator(ctx context.Context, snapshot CreatorSnapshot
 	}
 
 	generatedAt := p.now().UTC()
-	projected := collectProjectedVideos(snapshot)
 	creatorManifest := CreatorManifest{
 		ManifestVersion: ManifestVersion,
 		GeneratedAt:     generatedAt,
@@ -90,7 +93,11 @@ func (p *Projector) RebuildCreator(ctx context.Context, snapshot CreatorSnapshot
 			return err
 		}
 		linkPath := filepath.Join(creatorDir, item.bucket, item.video.VideoID+".mp4")
-		if err := os.Symlink(item.video.FilePath, linkPath); err != nil {
+		targetPath, err := filepath.Rel(filepath.Dir(linkPath), item.video.FilePath)
+		if err != nil {
+			return fmt.Errorf("计算相对链接失败 %s: %w", linkPath, err)
+		}
+		if err := os.Symlink(targetPath, linkPath); err != nil {
 			return fmt.Errorf("创建符号链接失败 %s: %w", linkPath, err)
 		}
 		if item.bucket == "rare" {
