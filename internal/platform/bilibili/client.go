@@ -27,6 +27,28 @@ import (
 
 var ErrInvalidID = errors.New("无效的 ID")
 
+// PermanentError 表示不可恢复的 API 错误，重试无意义。
+type PermanentError struct {
+	Code    int
+	Message string
+}
+
+func (e *PermanentError) Error() string {
+	return fmt.Sprintf("%s(%d)", e.Message, e.Code)
+}
+
+// permanentPlayURLCodes 是播放地址接口中明确不可恢复的错误码。
+// 87008: 视频无法播放（通常为版权限制或地区限制）
+// -404:  视频不存在
+// 62002: 视频不可见
+// -10403: 大会员专享
+var permanentPlayURLCodes = map[int]bool{
+	87008:  true,
+	-404:   true,
+	62002:  true,
+	-10403: true,
+}
+
 const (
 	defaultBaseURL  = "https://api.bilibili.com"
 	defaultReferer  = "https://www.bilibili.com"
@@ -532,6 +554,9 @@ func (c *Client) getPlayPlan(ctx context.Context, videoID string) (playPlan, err
 	if play.Code != 0 {
 		if play.Code == -403 || play.Code == -412 {
 			c.markRiskReason(fmt.Sprintf("/x/player/playurl 返回风控码 %d", play.Code))
+		}
+		if permanentPlayURLCodes[play.Code] {
+			return playPlan{}, &PermanentError{Code: play.Code, Message: play.Message}
 		}
 		return playPlan{}, fmt.Errorf("获取播放地址失败: %s(%d)", play.Message, play.Code)
 	}

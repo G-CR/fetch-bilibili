@@ -522,6 +522,14 @@ func (h *DefaultHandler) handleDownload(ctx context.Context, job repo.Job) error
 
 	size, err := h.client.Download(ctx, video.VideoID, dst)
 	if err != nil {
+		var permErr *bilibili.PermanentError
+		if errors.As(err, &permErr) {
+			_ = h.videos.UpdateState(ctx, videoID, "FAILED")
+			h.logger.Printf("视频 %s 永久下载失败(code=%d): %v", video.VideoID, permErr.Code, permErr)
+			video.State = "FAILED"
+			h.publishVideoChanged(video)
+			return err
+		}
 		_ = h.videos.UpdateState(ctx, videoID, "NEW")
 		return err
 	}
