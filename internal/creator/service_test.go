@@ -551,3 +551,47 @@ func TestServiceListActiveBackfillNamePublishesCreatorEvent(t *testing.T) {
 		t.Fatalf("expected resolved name, got %v", got)
 	}
 }
+
+func TestServicePauseMissingActivePublishesCreatorEvent(t *testing.T) {
+	repoStub := &stubRepo{
+		list: []repo.Creator{
+			{ID: 1, UID: "123", Name: "keep", Platform: "bilibili", Status: "active"},
+			{ID: 2, UID: "456", Name: "to-pause", Platform: "bilibili", Status: "active"},
+		},
+	}
+	publisher := &stubCreatorEventPublisher{}
+	svc := NewService(repoStub, nil, nil)
+	svc.SetPublisher(publisher)
+
+	paused, err := svc.pauseMissingActive(context.Background(), map[int64]struct{}{
+		1: {},
+	})
+	if err != nil {
+		t.Fatalf("pause missing error: %v", err)
+	}
+	if paused != 1 {
+		t.Fatalf("expected paused=1, got %d", paused)
+	}
+	if repoStub.statuses[2] != "paused" {
+		t.Fatalf("expected id=2 paused, got %+v", repoStub.statuses)
+	}
+
+	var found bool
+	for _, evt := range publisher.events {
+		if evt.Type != "creator.changed" {
+			continue
+		}
+		payload, ok := evt.Payload.(map[string]any)
+		if !ok {
+			t.Fatalf("expected map payload, got %T", evt.Payload)
+		}
+		assertCreatorChangedPayloadShape(t, payload)
+		if payload["id"] == int64(2) && payload["status"] == "paused" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected paused creator.changed for id=2, got %+v", publisher.events)
+	}
+}

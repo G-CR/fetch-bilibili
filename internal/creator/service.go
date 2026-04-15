@@ -266,6 +266,43 @@ func (s *Service) backfillCreatorNames(ctx context.Context, creators []repo.Crea
 	}
 }
 
+func (s *Service) pauseMissingActive(ctx context.Context, activeIDs map[int64]struct{}) (int, error) {
+	if s == nil || s.repo == nil {
+		return 0, nil
+	}
+	if activeIDs == nil {
+		activeIDs = map[int64]struct{}{}
+	}
+
+	paused := 0
+	lastID := int64(0)
+	for {
+		list, err := s.repo.ListActiveAfter(ctx, lastID, 200)
+		if err != nil {
+			return paused, err
+		}
+		if len(list) == 0 {
+			break
+		}
+		for _, c := range list {
+			if c.ID > lastID {
+				lastID = c.ID
+			}
+			if _, ok := activeIDs[c.ID]; ok {
+				continue
+			}
+			if err := s.repo.UpdateStatus(ctx, c.ID, "paused"); err != nil {
+				s.logger.Printf("停用博主失败 id=%d uid=%s: %v", c.ID, c.UID, err)
+				continue
+			}
+			c.Status = "paused"
+			s.publishCreatorChanged(c)
+			paused++
+		}
+	}
+	return paused, nil
+}
+
 func (s *Service) publishCreatorChanged(creator repo.Creator) {
 	if s.publisher == nil {
 		return

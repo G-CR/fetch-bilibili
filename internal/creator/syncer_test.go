@@ -60,6 +60,51 @@ creators:
 	}
 }
 
+func TestFileSyncerPauseMissingPublishesCreatorEvent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "creators.yaml")
+	content := `
+creators:
+  - uid: "123"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	repoStub := &stubRepo{
+		id: 1,
+		list: []repo.Creator{
+			{ID: 1, UID: "123", Name: "keep", Platform: "bilibili", Status: "active"},
+			{ID: 2, UID: "456", Name: "to-pause", Platform: "bilibili", Status: "active"},
+		},
+	}
+	publisher := &stubCreatorEventPublisher{}
+	svc := NewService(repoStub, nil, nil)
+	svc.SetPublisher(publisher)
+	syncer := NewFileSyncer(svc, path, 0, nil)
+
+	syncer.syncOnce(context.Background(), true)
+
+	var found bool
+	for _, evt := range publisher.events {
+		if evt.Type != "creator.changed" {
+			continue
+		}
+		payload, ok := evt.Payload.(map[string]any)
+		if !ok {
+			t.Fatalf("expected map payload, got %T", evt.Payload)
+		}
+		assertCreatorChangedPayloadShape(t, payload)
+		if payload["id"] == int64(2) && payload["status"] == "paused" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected paused creator.changed for id=2, got %+v", publisher.events)
+	}
+}
+
 func TestFileSyncerSkipUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "creators.yaml")

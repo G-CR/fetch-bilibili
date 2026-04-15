@@ -108,34 +108,14 @@ func (s *FileSyncer) syncOnce(ctx context.Context, force bool) {
 }
 
 func (s *FileSyncer) pauseMissing(ctx context.Context, activeIDs map[int64]struct{}) {
-	if s.service == nil || s.service.repo == nil {
+	if s.service == nil {
 		return
 	}
 
-	paused := 0
-	lastID := int64(0)
-	for {
-		list, err := s.service.repo.ListActiveAfter(ctx, lastID, 200)
-		if err != nil {
-			s.logger.Printf("加载活跃博主失败: %v", err)
-			return
-		}
-		if len(list) == 0 {
-			break
-		}
-		for _, c := range list {
-			if c.ID > lastID {
-				lastID = c.ID
-			}
-			if _, ok := activeIDs[c.ID]; ok {
-				continue
-			}
-			if err := s.service.repo.UpdateStatus(ctx, c.ID, "paused"); err != nil {
-				s.logger.Printf("停用博主失败 id=%d uid=%s: %v", c.ID, c.UID, err)
-				continue
-			}
-			paused++
-		}
+	paused, err := s.service.pauseMissingActive(ctx, activeIDs)
+	if err != nil {
+		s.logger.Printf("加载活跃博主失败: %v", err)
+		return
 	}
 	if paused > 0 {
 		s.logger.Printf("自动停用博主: %d", paused)
