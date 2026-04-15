@@ -94,6 +94,7 @@ func (p *WorkerPool) consumeOnce(ctx context.Context, id int) {
 	}
 
 	job := jobsList[0]
+	job.UpdatedAt = p.now()
 	p.publishJobChanged(job)
 
 	err = p.handler.Handle(ctx, job)

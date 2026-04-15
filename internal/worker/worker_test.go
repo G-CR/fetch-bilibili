@@ -228,3 +228,41 @@ func TestWorkerFailurePublishesJobEvent(t *testing.T) {
 
 	pool.Wait()
 }
+
+func TestWorkerRunningPublishesJobEventWithFreshUpdatedAt(t *testing.T) {
+	oldUpdatedAt := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
+	freshUpdatedAt := time.Date(2026, 4, 15, 10, 0, 5, 0, time.UTC)
+	job := repo.Job{
+		ID:        30,
+		Type:      jobs.TypeFetch,
+		Status:    jobs.StatusRunning,
+		UpdatedAt: oldUpdatedAt,
+	}
+	repo := &stubRepo{job: job, updates: make(chan updateRecord, 1)}
+	handler := &stubHandler{}
+	publisher := &stubEventPublisher{events: make(chan live.Event, 2)}
+	pool := New(repo, handler, 1, 1*time.Millisecond, nil, publisher)
+	pool.now = func() time.Time { return freshUpdatedAt }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	pool.Start(ctx)
+
+	running := waitEvent(t, publisher.events, 80*time.Millisecond)
+	payload, ok := running.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload map, got %T", running.Payload)
+	}
+	gotUpdatedAt, ok := payload["updated_at"].(time.Time)
+	if !ok {
+		t.Fatalf("expected updated_at time.Time, got %T", payload["updated_at"])
+	}
+	if gotUpdatedAt.Equal(oldUpdatedAt) {
+		t.Fatalf("expected running updated_at not old time, got %v", gotUpdatedAt)
+	}
+	if !gotUpdatedAt.Equal(freshUpdatedAt) {
+		t.Fatalf("expected running updated_at %v, got %v", freshUpdatedAt, gotUpdatedAt)
+	}
+
+	pool.Wait()
+}
