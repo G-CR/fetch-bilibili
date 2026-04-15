@@ -87,6 +87,32 @@ func waitEvent(t *testing.T, ch <-chan live.Event, timeout time.Duration) live.E
 	}
 }
 
+func expectStableSnapshotPayload(t *testing.T, payload map[string]any) {
+	t.Helper()
+	requiredKeys := []string{
+		"id",
+		"type",
+		"status",
+		"payload",
+		"error_msg",
+		"not_before",
+		"started_at",
+		"finished_at",
+		"created_at",
+		"updated_at",
+	}
+	for _, key := range requiredKeys {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("expected payload key %q", key)
+		}
+	}
+	for _, key := range []string{"error_msg", "not_before", "started_at", "finished_at", "created_at", "updated_at"} {
+		if _, ok := payload[key].(string); !ok {
+			t.Fatalf("expected %s string, got %T", key, payload[key])
+		}
+	}
+}
+
 func TestWorkerSuccess(t *testing.T) {
 	repo := &stubRepo{job: repo.Job{ID: 1}, updates: make(chan updateRecord, 1)}
 	handler := &stubHandler{}
@@ -182,16 +208,30 @@ func TestWorkerSuccessPublishesJobEvent(t *testing.T) {
 	if payload, ok := running.Payload.(map[string]any); !ok {
 		t.Fatalf("expected running payload map, got %T", running.Payload)
 	} else {
+		expectStableSnapshotPayload(t, payload)
 		if payload["id"] != int64(10) || payload["status"] != jobs.StatusRunning {
 			t.Fatalf("unexpected running payload: %#v", payload)
+		}
+		if payload["finished_at"] != "" {
+			t.Fatalf("expected running finished_at empty, got %#v", payload["finished_at"])
+		}
+		if payload["started_at"] == "" {
+			t.Fatalf("expected running started_at non-empty")
 		}
 	}
 
 	if payload, ok := success.Payload.(map[string]any); !ok {
 		t.Fatalf("expected success payload map, got %T", success.Payload)
 	} else {
+		expectStableSnapshotPayload(t, payload)
 		if payload["id"] != int64(10) || payload["status"] != jobs.StatusSuccess {
 			t.Fatalf("unexpected success payload: %#v", payload)
+		}
+		if payload["error_msg"] != "" {
+			t.Fatalf("expected success error_msg empty, got %#v", payload["error_msg"])
+		}
+		if payload["finished_at"] == "" {
+			t.Fatalf("expected success finished_at non-empty")
 		}
 	}
 
@@ -218,11 +258,15 @@ func TestWorkerFailurePublishesJobEvent(t *testing.T) {
 	if payload, ok := failed.Payload.(map[string]any); !ok {
 		t.Fatalf("expected failed payload map, got %T", failed.Payload)
 	} else {
+		expectStableSnapshotPayload(t, payload)
 		if payload["status"] != jobs.StatusFailed {
 			t.Fatalf("expected failed status, got %#v", payload["status"])
 		}
 		if payload["error_msg"] != "boom" {
 			t.Fatalf("expected error_msg boom, got %#v", payload["error_msg"])
+		}
+		if payload["finished_at"] == "" {
+			t.Fatalf("expected failed finished_at non-empty")
 		}
 	}
 
@@ -253,16 +297,71 @@ func TestWorkerRunningPublishesJobEventWithFreshUpdatedAt(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected payload map, got %T", running.Payload)
 	}
-	gotUpdatedAt, ok := payload["updated_at"].(time.Time)
+	gotUpdatedAt, ok := payload["updated_at"].(string)
 	if !ok {
-		t.Fatalf("expected updated_at time.Time, got %T", payload["updated_at"])
+		t.Fatalf("expected updated_at string, got %T", payload["updated_at"])
 	}
-	if gotUpdatedAt.Equal(oldUpdatedAt) {
+	if gotUpdatedAt == oldUpdatedAt.Format(time.RFC3339) {
 		t.Fatalf("expected running updated_at not old time, got %v", gotUpdatedAt)
 	}
-	if !gotUpdatedAt.Equal(freshUpdatedAt) {
+	if gotUpdatedAt != freshUpdatedAt.Format(time.RFC3339) {
 		t.Fatalf("expected running updated_at %v, got %v", freshUpdatedAt, gotUpdatedAt)
 	}
 
 	pool.Wait()
+}
+
+func TestWorkerUpdateStatusErrorDoesNotPublishTerminalEvent(t *testing.T) {
+	testCases := []struct {
+		name          string
+		handlerErr    error
+		terminalState string
+	}{
+		{name: "success terminal blocked", handlerErr: nil, terminalState: jobs.StatusSuccess},
+		{name: "failed terminal blocked", handlerErr: errors.New("boom"), terminalState: jobs.StatusFailed},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &stubRepo{
+				job: repo.Job{
+					ID:        40,
+					Type:      jobs.TypeFetch,
+					Status:    jobs.StatusRunning,
+					StartedAt: time.Date(2026, 4, 15, 11, 0, 0, 0, time.UTC),
+				},
+				updateErr: errors.New("db update failed"),
+			}
+			handler := &stubHandler{err: tc.handlerErr}
+			publisher := &stubEventPublisher{events: make(chan live.Event, 4)}
+			pool := New(repo, handler, 1, 1*time.Millisecond, nil, publisher)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			pool.Start(ctx)
+
+			first := waitEvent(t, publisher.events, 80*time.Millisecond)
+			payload, ok := first.Payload.(map[string]any)
+			if !ok {
+				t.Fatalf("expected first payload map, got %T", first.Payload)
+			}
+			if payload["status"] != jobs.StatusRunning {
+				t.Fatalf("expected running first event, got %#v", payload["status"])
+			}
+
+			select {
+			case evt := <-publisher.events:
+				p, ok := evt.Payload.(map[string]any)
+				if !ok {
+					t.Fatalf("expected payload map, got %T", evt.Payload)
+				}
+				if p["status"] == tc.terminalState {
+					t.Fatalf("unexpected terminal event when update status failed: %#v", p)
+				}
+			case <-time.After(20 * time.Millisecond):
+			}
+
+			pool.Wait()
+		})
+	}
 }

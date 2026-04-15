@@ -70,6 +70,9 @@ func (s *Service) enqueue(ctx context.Context, job repo.Job) error {
 	}
 	job.ID = id
 	job.UpdatedAt = s.now()
+	if job.CreatedAt.IsZero() {
+		job.CreatedAt = job.UpdatedAt
+	}
 	s.publishJobChanged(job)
 	return nil
 }
@@ -88,11 +91,23 @@ func (s *Service) publishJobChanged(job repo.Job) {
 		Type: "job.changed",
 		At:   updatedAt,
 		Payload: map[string]any{
-			"id":         job.ID,
-			"type":       job.Type,
-			"status":     job.Status,
-			"payload":    job.Payload,
-			"updated_at": updatedAt,
+			"id":          job.ID,
+			"type":        job.Type,
+			"status":      job.Status,
+			"payload":     job.Payload,
+			"error_msg":   job.ErrorMsg,
+			"not_before":  formatEventTime(job.NotBefore),
+			"started_at":  formatEventTime(job.StartedAt),
+			"finished_at": formatEventTime(job.FinishedAt),
+			"created_at":  formatEventTime(job.CreatedAt),
+			"updated_at":  formatEventTime(updatedAt),
 		},
 	})
+}
+
+func formatEventTime(v time.Time) string {
+	if v.IsZero() {
+		return ""
+	}
+	return v.Format(time.RFC3339)
 }

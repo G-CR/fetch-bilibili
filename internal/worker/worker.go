@@ -95,6 +95,9 @@ func (p *WorkerPool) consumeOnce(ctx context.Context, id int) {
 
 	job := jobsList[0]
 	job.UpdatedAt = p.now()
+	if job.StartedAt.IsZero() {
+		job.StartedAt = job.UpdatedAt
+	}
 	p.publishJobChanged(job)
 
 	err = p.handler.Handle(ctx, job)
@@ -106,6 +109,7 @@ func (p *WorkerPool) consumeOnce(ctx context.Context, id int) {
 		job.Status = jobs.StatusSuccess
 		job.ErrorMsg = ""
 		job.UpdatedAt = p.now()
+		job.FinishedAt = job.UpdatedAt
 		p.publishJobChanged(job)
 		return
 	}
@@ -121,6 +125,7 @@ func (p *WorkerPool) consumeOnce(ctx context.Context, id int) {
 	job.Status = jobs.StatusFailed
 	job.ErrorMsg = msg
 	job.UpdatedAt = p.now()
+	job.FinishedAt = job.UpdatedAt
 	p.publishJobChanged(job)
 }
 
@@ -133,14 +138,16 @@ func (p *WorkerPool) publishJobChanged(job repo.Job) {
 		updatedAt = p.now()
 	}
 	payload := map[string]any{
-		"id":         job.ID,
-		"type":       job.Type,
-		"status":     job.Status,
-		"payload":    job.Payload,
-		"updated_at": updatedAt,
-	}
-	if job.ErrorMsg != "" {
-		payload["error_msg"] = job.ErrorMsg
+		"id":          job.ID,
+		"type":        job.Type,
+		"status":      job.Status,
+		"payload":     job.Payload,
+		"error_msg":   job.ErrorMsg,
+		"not_before":  formatEventTime(job.NotBefore),
+		"started_at":  formatEventTime(job.StartedAt),
+		"finished_at": formatEventTime(job.FinishedAt),
+		"created_at":  formatEventTime(job.CreatedAt),
+		"updated_at":  formatEventTime(updatedAt),
 	}
 	p.publisher.Publish(live.Event{
 		ID:      fmt.Sprintf("job-%d-%d", job.ID, updatedAt.UnixNano()),
@@ -148,4 +155,11 @@ func (p *WorkerPool) publishJobChanged(job repo.Job) {
 		At:      updatedAt,
 		Payload: payload,
 	})
+}
+
+func formatEventTime(v time.Time) string {
+	if v.IsZero() {
+		return ""
+	}
+	return v.Format(time.RFC3339)
 }

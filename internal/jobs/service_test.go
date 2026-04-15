@@ -3,8 +3,8 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
-	"time"
 
 	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/repo"
@@ -47,6 +47,35 @@ type stubEventPublisher struct {
 
 func (s *stubEventPublisher) Publish(evt live.Event) {
 	s.events = append(s.events, evt)
+}
+
+func expectJobSnapshotPayload(t *testing.T, payload map[string]any) {
+	t.Helper()
+
+	requiredKeys := []string{
+		"id",
+		"type",
+		"status",
+		"payload",
+		"error_msg",
+		"not_before",
+		"started_at",
+		"finished_at",
+		"created_at",
+		"updated_at",
+	}
+	for _, key := range requiredKeys {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("expected payload key %q", key)
+		}
+	}
+
+	stringKeys := []string{"error_msg", "not_before", "started_at", "finished_at", "created_at", "updated_at"}
+	for _, key := range stringKeys {
+		if _, ok := payload[key].(string); !ok {
+			t.Fatalf("expected %s as string, got %T", key, payload[key])
+		}
+	}
 }
 
 func TestEnqueueFetch(t *testing.T) {
@@ -205,6 +234,7 @@ func TestEnqueueMethodsPublishesEvent(t *testing.T) {
 			if payload["status"] != StatusQueued {
 				t.Fatalf("expected status queued, got %#v", payload["status"])
 			}
+			expectJobSnapshotPayload(t, payload)
 			if gotPayload, ok := payload["payload"].(map[string]any); len(tc.wantPayload) == 0 {
 				if ok && len(gotPayload) > 0 {
 					t.Fatalf("expected empty payload, got %#v", gotPayload)
@@ -217,8 +247,17 @@ func TestEnqueueMethodsPublishesEvent(t *testing.T) {
 					t.Fatalf("expected video_id %#v, got %#v", tc.wantPayload["video_id"], gotPayload["video_id"])
 				}
 			}
-			if _, ok := payload["updated_at"].(time.Time); !ok {
-				t.Fatalf("expected updated_at time.Time, got %T", payload["updated_at"])
+			if payload["error_msg"] != "" {
+				t.Fatalf("expected empty error_msg, got %#v", payload["error_msg"])
+			}
+			if payload["started_at"] != "" {
+				t.Fatalf("expected empty started_at, got %#v", payload["started_at"])
+			}
+			if payload["finished_at"] != "" {
+				t.Fatalf("expected empty finished_at, got %#v", payload["finished_at"])
+			}
+			if payload["created_at"] == "" || payload["updated_at"] == "" {
+				t.Fatalf("expected created_at/updated_at non-empty, got created_at=%#v updated_at=%#v", payload["created_at"], payload["updated_at"])
 			}
 		})
 	}
@@ -234,5 +273,22 @@ func TestEnqueueDuplicatePublishesEventOnlyOnSuccess(t *testing.T) {
 	}
 	if len(publisher.events) != 0 {
 		t.Fatalf("expected no event for duplicate enqueue, got %d", len(publisher.events))
+	}
+}
+
+func TestEnqueueErrorDoesNotPublishEvent(t *testing.T) {
+	repo := &stubJobRepo{err: errors.New("enqueue failed")}
+	publisher := &stubEventPublisher{}
+	svc := NewService(repo, publisher)
+
+	err := svc.EnqueueFetch(context.Background())
+	if err == nil {
+		t.Fatalf("expected enqueue error")
+	}
+	if got := fmt.Sprintf("%v", err); got != "enqueue failed" {
+		t.Fatalf("expected enqueue failed error, got %s", got)
+	}
+	if len(publisher.events) != 0 {
+		t.Fatalf("expected no event when enqueue fails, got %d", len(publisher.events))
 	}
 }
