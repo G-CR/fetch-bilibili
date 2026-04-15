@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,21 +12,17 @@ import (
 	"fetch-bilibili/internal/live"
 )
 
-var eventsBroker = live.NewBroker()
 var heartbeatInterval = 15 * time.Second
 
-func EventsBroker() *live.Broker {
-	return eventsBroker
+type eventSubscriber interface {
+	Subscribe(ctx context.Context, buffer int) <-chan live.Event
 }
 
 type eventsStreamHandler struct {
-	broker *live.Broker
+	broker eventSubscriber
 }
 
-func newEventsStreamHandler(broker *live.Broker) http.Handler {
-	if broker == nil {
-		broker = eventsBroker
-	}
+func newEventsStreamHandler(broker eventSubscriber) http.Handler {
 	return &eventsStreamHandler{broker: broker}
 }
 
@@ -39,32 +37,40 @@ func (h *eventsStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	if h.broker == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	controller := http.NewResponseController(w)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	if err := writeSSE(w, flusher, "hello", sseServerTimePayload()); err != nil {
-		return
-	}
-
-	sub := h.broker.Subscribe(r.Context(), 32)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	sub := h.broker.Subscribe(ctx, 32)
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
 
+	if err := writeSSE(w, flusher, controller, "hello", sseServerTimePayload()); err != nil {
+		return
+	}
+
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case <-heartbeatTicker.C:
-			if err := writeSSE(w, flusher, "heartbeat", sseServerTimePayload()); err != nil {
+			if err := writeSSE(w, flusher, controller, "heartbeat", sseServerTimePayload()); err != nil {
 				return
 			}
 		case evt, ok := <-sub:
 			if !ok {
 				return
 			}
-			if err := writeSSE(w, flusher, evt.Type, evt.Payload); err != nil {
+			if err := writeSSE(w, flusher, controller, evt.Type, evt.Payload); err != nil {
 				return
 			}
 		}
@@ -75,7 +81,11 @@ func sseServerTimePayload() map[string]string {
 	return map[string]string{"server_time": time.Now().Format(time.RFC3339)}
 }
 
-func writeSSE(w io.Writer, flusher http.Flusher, eventType string, payload any) error {
+func writeSSE(w io.Writer, flusher http.Flusher, controller *http.ResponseController, eventType string, payload any) error {
+	if err := clearWriteDeadline(controller); err != nil {
+		return err
+	}
+
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -87,5 +97,17 @@ func writeSSE(w io.Writer, flusher http.Flusher, eventType string, payload any) 
 		return err
 	}
 	flusher.Flush()
+	return nil
+}
+
+func clearWriteDeadline(controller *http.ResponseController) error {
+	if controller == nil {
+		return nil
+	}
+
+	if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+
 	return nil
 }

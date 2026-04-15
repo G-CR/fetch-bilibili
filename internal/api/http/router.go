@@ -6,6 +6,7 @@ import (
 
 	"fetch-bilibili/internal/creator"
 	"fetch-bilibili/internal/dashboard"
+	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/repo"
 )
 
@@ -48,7 +49,7 @@ type ConfigService interface {
 	Save(ctx context.Context, content string) (ConfigSaveResult, error)
 }
 
-func NewRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService, configSvc ConfigService) http.Handler {
+func NewRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService, configSvc ConfigService, broker *live.Broker) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -62,7 +63,7 @@ func NewRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc Dashbo
 	mux.Handle("/creators", newCreatorHandler(creatorSvc))
 	mux.Handle("/creators/", newCreatorItemHandler(creatorSvc))
 	mux.Handle("/jobs", newJobHandler(jobSvc, dashboardSvc))
-	mux.Handle("/events/stream", newEventsStreamHandler(EventsBroker()))
+	mux.Handle("/events/stream", newEventsStreamHandler(broker))
 	mux.Handle("/videos", newVideoHandler(dashboardSvc))
 	mux.Handle("/videos/", newVideoItemHandler(jobSvc, dashboardSvc))
 	mux.Handle("/system/status", newSystemStatusHandler(dashboardSvc))

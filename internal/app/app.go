@@ -18,6 +18,7 @@ import (
 	"fetch-bilibili/internal/db"
 	"fetch-bilibili/internal/jobs"
 	"fetch-bilibili/internal/library"
+	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/platform/bilibili"
 	"fetch-bilibili/internal/repo"
 	mysqlrepo "fetch-bilibili/internal/repo/mysql"
@@ -74,6 +75,7 @@ type App struct {
 	workers     workerRunner
 	authWatcher authWatcherRunner
 	creatorSync creatorSyncRunner
+	broker      *live.Broker
 	server      *http.Server
 	restartCh   chan struct{}
 }
@@ -161,6 +163,7 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	dashboardService := newDashboardService(database, repos.Creators, repos.Videos, repos.Jobs, client, cfg)
+	broker := live.NewBroker()
 	app := &App{
 		cfg:         cfg,
 		db:          database,
@@ -169,10 +172,11 @@ func New(cfg config.Config) (*App, error) {
 		workers:     pool,
 		authWatcher: authWatcher,
 		creatorSync: creatorSync,
+		broker:      broker,
 		restartCh:   make(chan struct{}, 1),
 	}
 	configEditor := config.NewEditor(resolveConfigPath(), app.requestRestart)
-	router := newRouter(creatorService, jobService, dashboardService, configEditorAdapter{editor: configEditor})
+	router := newRouter(creatorService, jobService, dashboardService, configEditorAdapter{editor: configEditor}, broker)
 	server := &http.Server{
 		Addr:         cfg.Server.Addr,
 		Handler:      router,

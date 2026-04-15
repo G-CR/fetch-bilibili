@@ -168,7 +168,11 @@ func (s *stubConfigService) Save(_ context.Context, content string) (ConfigSaveR
 }
 
 func newTestRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService) http.Handler {
-	return NewRouter(creatorSvc, jobSvc, dashboardSvc, nil)
+	return newTestRouterWithBroker(creatorSvc, jobSvc, dashboardSvc, live.NewBroker())
+}
+
+func newTestRouterWithBroker(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService, broker *live.Broker) http.Handler {
+	return NewRouter(creatorSvc, jobSvc, dashboardSvc, nil, broker)
 }
 
 func TestHealthz(t *testing.T) {
@@ -211,12 +215,6 @@ func TestNotFound(t *testing.T) {
 }
 
 func TestEventsStreamHeadersHelloAndHeartbeat(t *testing.T) {
-	previousBroker := eventsBroker
-	eventsBroker = live.NewBroker()
-	t.Cleanup(func() {
-		eventsBroker = previousBroker
-	})
-
 	previousHeartbeatInterval := heartbeatInterval
 	heartbeatInterval = 10 * time.Millisecond
 	t.Cleanup(func() {
@@ -281,19 +279,14 @@ func TestEventsStreamHeadersHelloAndHeartbeat(t *testing.T) {
 }
 
 func TestEventsStreamWritesBrokerPayloadAsJSON(t *testing.T) {
-	previousBroker := eventsBroker
-	eventsBroker = live.NewBroker()
-	t.Cleanup(func() {
-		eventsBroker = previousBroker
-	})
-
 	previousHeartbeatInterval := heartbeatInterval
 	heartbeatInterval = time.Hour
 	t.Cleanup(func() {
 		heartbeatInterval = previousHeartbeatInterval
 	})
 
-	r := newTestRouter(nil, nil, nil)
+	broker := live.NewBroker()
+	r := newTestRouterWithBroker(nil, nil, nil, broker)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
@@ -311,7 +304,7 @@ func TestEventsStreamWritesBrokerPayloadAsJSON(t *testing.T) {
 	_ = readSSEMessage(t, reader) // hello
 
 	wantPayload := map[string]string{"id": "11", "status": "running"}
-	eventsBroker.Publish(live.Event{
+	broker.Publish(live.Event{
 		ID:      "evt-1",
 		Type:    "job.changed",
 		At:      time.Now(),
@@ -337,12 +330,6 @@ func TestEventsStreamWritesBrokerPayloadAsJSON(t *testing.T) {
 }
 
 func TestRouterRegistersEventsStream(t *testing.T) {
-	previousBroker := eventsBroker
-	eventsBroker = live.NewBroker()
-	t.Cleanup(func() {
-		eventsBroker = previousBroker
-	})
-
 	previousHeartbeatInterval := heartbeatInterval
 	heartbeatInterval = time.Hour
 	t.Cleanup(func() {
@@ -367,6 +354,108 @@ func TestRouterRegistersEventsStream(t *testing.T) {
 	if eventType != "hello" {
 		t.Fatalf("expected router to serve hello event, got %q", eventType)
 	}
+}
+
+func TestEventsStreamResistsServerWriteTimeout(t *testing.T) {
+	previousHeartbeatInterval := heartbeatInterval
+	heartbeatInterval = time.Hour
+	t.Cleanup(func() {
+		heartbeatInterval = previousHeartbeatInterval
+	})
+
+	broker := live.NewBroker()
+	srv := httptest.NewUnstartedServer(newTestRouterWithBroker(nil, nil, nil, broker))
+	srv.Config.WriteTimeout = 150 * time.Millisecond
+	srv.Start()
+	defer srv.Close()
+
+	resp, err := srv.Client().Get(srv.URL + "/events/stream")
+	if err != nil {
+		t.Fatalf("get events stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	_ = readSSEMessage(t, reader) // hello
+
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		broker.Publish(live.Event{
+			ID:      "evt-timeout",
+			Type:    "job.changed",
+			At:      time.Now(),
+			Payload: map[string]any{"id": 99},
+		})
+	}()
+
+	message := readSSEMessage(t, reader)
+	eventType, _ := parseSSEMessage(t, message)
+	if eventType != "job.changed" {
+		t.Fatalf("expected event after write timeout window, got %q", eventType)
+	}
+}
+
+func TestEventsStreamSubscribesBeforeHelloAndCancelsOnEarlyWriteFailure(t *testing.T) {
+	subscriber := &subscribeOrderSpy{
+		subscribed: make(chan struct{}),
+		ctxDone:    make(chan struct{}),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/events/stream", nil)
+	writer := &failOnFirstWriteRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		subscribed:       subscriber.subscribed,
+	}
+
+	newEventsStreamHandler(subscriber).ServeHTTP(writer, req)
+
+	if !writer.firstWriteSawSubscription {
+		t.Fatal("expected subscribe to happen before hello write")
+	}
+
+	select {
+	case <-subscriber.ctxDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected subscription context to be canceled on early return")
+	}
+}
+
+type subscribeOrderSpy struct {
+	subscribed chan struct{}
+	ctxDone    chan struct{}
+}
+
+func (s *subscribeOrderSpy) Subscribe(ctx context.Context, buffer int) <-chan live.Event {
+	close(s.subscribed)
+
+	ch := make(chan live.Event)
+	go func() {
+		<-ctx.Done()
+		close(s.ctxDone)
+		close(ch)
+	}()
+
+	return ch
+}
+
+type failOnFirstWriteRecorder struct {
+	*httptest.ResponseRecorder
+	subscribed                <-chan struct{}
+	firstWriteSawSubscription bool
+	wrote                     bool
+}
+
+func (w *failOnFirstWriteRecorder) Write(p []byte) (int, error) {
+	if !w.wrote {
+		w.wrote = true
+		select {
+		case <-w.subscribed:
+			w.firstWriteSawSubscription = true
+		default:
+		}
+		return 0, errors.New("boom")
+	}
+
+	return w.ResponseRecorder.Write(p)
 }
 
 func readSSEMessage(t *testing.T, reader *bufio.Reader) string {
@@ -1329,7 +1418,7 @@ func TestGetSystemConfig(t *testing.T) {
 			Content: "storage:\n  root_dir: /data\nmysql:\n  dsn: test\n",
 		},
 	}
-	r := NewRouter(nil, nil, nil, configSvc)
+	r := NewRouter(nil, nil, nil, configSvc, live.NewBroker())
 	req := httptest.NewRequest(http.MethodGet, "/system/config", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -1361,7 +1450,7 @@ func TestPutSystemConfig(t *testing.T) {
 			Path:             "/app/config.yaml",
 		},
 	}
-	r := NewRouter(nil, nil, nil, configSvc)
+	r := NewRouter(nil, nil, nil, configSvc, live.NewBroker())
 	req := httptest.NewRequest(http.MethodPut, "/system/config", bytes.NewReader([]byte(`{"content":"storage:\n  root_dir: /data\nmysql:\n  dsn: test\n"}`)))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
