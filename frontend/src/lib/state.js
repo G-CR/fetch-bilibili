@@ -298,6 +298,7 @@ export function deriveMetrics(state) {
   const jobs = Array.isArray(state?.jobs) ? state.jobs : [];
   const storage = state?.storage || {};
   const overview = state?.system?.overview || {};
+  const preciseStoragePercent = calculateStoragePercent(storage);
 
   return {
     creators: numberOr(overview.activeCreators, creators.length),
@@ -309,11 +310,23 @@ export function deriveMetrics(state) {
       overview.rareVideos,
       videos.filter((video) => video.state === "OUT_OF_PRINT").length
     ),
-    storagePercent: numberOr(
-      storage.usagePercent,
-      Math.min(100, Math.round((numberOr(storage.usedBytes, 0) * 100) / Math.max(numberOr(storage.limitBytes, 1), 1)))
-    )
+    storagePercent: preciseStoragePercent
   };
+}
+
+function calculateStoragePercent(storage) {
+  const usedBytes = numberOr(storage?.usedBytes, 0);
+  const limitBytes = numberOr(storage?.limitBytes, 0);
+  if (limitBytes > 0) {
+    if (usedBytes > 0) {
+      const percent = (usedBytes * 100) / limitBytes;
+      if (Number.isFinite(percent) && percent > 0) {
+        return Math.min(100, Math.round(percent * 100) / 100);
+      }
+    }
+    return Math.min(100, numberOr(storage?.usagePercent, 0));
+  }
+  return Math.min(100, numberOr(storage?.usagePercent, 0));
 }
 
 export function deriveTaskDiagnostics(state) {

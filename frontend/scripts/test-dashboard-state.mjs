@@ -117,6 +117,16 @@ assert.equal(metrics.pendingJobs, 1);
 assert.equal(metrics.rareVideos, 1);
 assert.equal(metrics.storagePercent, 50);
 
+const tinyStorageMetrics = deriveMetrics({
+  ...createDefaultState(),
+  storage: {
+    usedBytes: 10 * 1024 * 1024 * 1024,
+    limitBytes: 2 * 1024 * 1024 * 1024 * 1024,
+    usagePercent: 0
+  }
+});
+assert.equal(tinyStorageMetrics.storagePercent, 0.49);
+
 const preview = deriveCleanupPreview({
   ...createDefaultState(),
   videos: [
