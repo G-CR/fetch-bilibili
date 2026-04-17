@@ -16,6 +16,7 @@ import (
 	"fetch-bilibili/internal/config"
 	"fetch-bilibili/internal/creator"
 	"fetch-bilibili/internal/dashboard"
+	"fetch-bilibili/internal/discovery"
 	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/repo"
 )
@@ -168,11 +169,80 @@ func (s *stubConfigService) Save(_ context.Context, content string) (ConfigSaveR
 }
 
 func newTestRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService) http.Handler {
-	return newTestRouterWithBroker(creatorSvc, jobSvc, dashboardSvc, live.NewBroker())
+	return newTestRouterWithBroker(creatorSvc, jobSvc, dashboardSvc, nil, live.NewBroker())
 }
 
-func newTestRouterWithBroker(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService, broker *live.Broker) http.Handler {
-	return NewRouter(creatorSvc, jobSvc, dashboardSvc, nil, broker)
+func newTestRouterWithCandidate(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService, candidateSvc CandidateService) http.Handler {
+	return newTestRouterWithBroker(creatorSvc, jobSvc, dashboardSvc, candidateSvc, live.NewBroker())
+}
+
+func newTestRouterWithBroker(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService, candidateSvc CandidateService, broker *live.Broker) http.Handler {
+	return NewRouter(creatorSvc, jobSvc, dashboardSvc, nil, candidateSvc, broker)
+}
+
+type stubCandidateService struct {
+	listViews    []discovery.CandidateView
+	total        int64
+	listFilter   repo.CandidateListFilter
+	listErr      error
+	detail       discovery.CandidateDetailView
+	detailID     int64
+	detailErr    error
+	discoverCall int
+	discoverErr  error
+	approveID    int64
+	approveErr   error
+	approveResp  repo.Creator
+	ignoreID     int64
+	ignoreErr    error
+	blockID      int64
+	blockErr     error
+	reviewID     int64
+	reviewErr    error
+}
+
+func (s *stubCandidateService) ListCandidates(_ context.Context, filter repo.CandidateListFilter) ([]discovery.CandidateView, int64, error) {
+	s.listFilter = filter
+	if s.listErr != nil {
+		return nil, 0, s.listErr
+	}
+	return append([]discovery.CandidateView(nil), s.listViews...), s.total, nil
+}
+
+func (s *stubCandidateService) GetCandidate(_ context.Context, id int64) (discovery.CandidateDetailView, error) {
+	s.detailID = id
+	if s.detailErr != nil {
+		return discovery.CandidateDetailView{}, s.detailErr
+	}
+	return s.detail, nil
+}
+
+func (s *stubCandidateService) TriggerDiscover(_ context.Context) error {
+	s.discoverCall++
+	return s.discoverErr
+}
+
+func (s *stubCandidateService) Approve(_ context.Context, id int64) (repo.Creator, error) {
+	s.approveID = id
+	if s.approveErr != nil {
+		return repo.Creator{}, s.approveErr
+	}
+	return s.approveResp, nil
+}
+
+func (s *stubCandidateService) Ignore(_ context.Context, id int64) error {
+	s.ignoreID = id
+	return s.ignoreErr
+}
+
+func (s *stubCandidateService) Block(_ context.Context, id int64) error {
+	s.blockID = id
+	return s.blockErr
+}
+
+func (s *stubCandidateService) Review(_ context.Context, id int64) error {
+	s.reviewID = id
+	return s.reviewErr
 }
 
 func TestHealthz(t *testing.T) {
@@ -286,7 +356,7 @@ func TestEventsStreamWritesBrokerPayloadAsJSON(t *testing.T) {
 	})
 
 	broker := live.NewBroker()
-	r := newTestRouterWithBroker(nil, nil, nil, broker)
+	r := newTestRouterWithBroker(nil, nil, nil, nil, broker)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
@@ -364,7 +434,7 @@ func TestEventsStreamResistsServerWriteTimeout(t *testing.T) {
 	})
 
 	broker := live.NewBroker()
-	srv := httptest.NewUnstartedServer(newTestRouterWithBroker(nil, nil, nil, broker))
+	srv := httptest.NewUnstartedServer(newTestRouterWithBroker(nil, nil, nil, nil, broker))
 	srv.Config.WriteTimeout = 150 * time.Millisecond
 	srv.Start()
 	defer srv.Close()
@@ -1418,7 +1488,7 @@ func TestGetSystemConfig(t *testing.T) {
 			Content: "storage:\n  root_dir: /data\nmysql:\n  dsn: test\n",
 		},
 	}
-	r := NewRouter(nil, nil, nil, configSvc, live.NewBroker())
+	r := NewRouter(nil, nil, nil, configSvc, nil, live.NewBroker())
 	req := httptest.NewRequest(http.MethodGet, "/system/config", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -1450,7 +1520,7 @@ func TestPutSystemConfig(t *testing.T) {
 			Path:             "/app/config.yaml",
 		},
 	}
-	r := NewRouter(nil, nil, nil, configSvc, live.NewBroker())
+	r := NewRouter(nil, nil, nil, configSvc, nil, live.NewBroker())
 	req := httptest.NewRequest(http.MethodPut, "/system/config", bytes.NewReader([]byte(`{"content":"storage:\n  root_dir: /data\nmysql:\n  dsn: test\n"}`)))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -1473,6 +1543,208 @@ func TestPutSystemConfig(t *testing.T) {
 	if !payload.Changed || !payload.RestartScheduled {
 		t.Fatalf("unexpected save response: %+v", payload)
 	}
+}
+
+func TestCandidateCreatorsList(t *testing.T) {
+	service := &stubCandidateService{
+		listViews: []discovery.CandidateView{
+			{
+				Candidate: repo.CandidateCreator{ID: 7, Platform: "bilibili", UID: "123", Name: "候选 A", Status: "reviewing", Score: 88},
+				Sources: []repo.CandidateCreatorSource{
+					{SourceType: "keyword", SourceValue: "补档", SourceLabel: "关键词：补档", Weight: 15},
+				},
+			},
+		},
+		total: 1,
+	}
+	r := newTestRouterWithCandidate(nil, nil, nil, service)
+	req := httptest.NewRequest(http.MethodGet, "/candidate-creators?status=reviewing&min_score=80&keyword=补档&page=2&page_size=5", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.listFilter.Status != "reviewing" || service.listFilter.MinScore != 80 || service.listFilter.Keyword != "补档" || service.listFilter.Page != 2 || service.listFilter.PageSize != 5 {
+		t.Fatalf("unexpected filter: %+v", service.listFilter)
+	}
+
+	var payload struct {
+		Items []struct {
+			ID      int64 `json:"id"`
+			Sources []struct {
+				SourceType string `json:"source_type"`
+			} `json:"sources"`
+		} `json:"items"`
+		Total    int64 `json:"total"`
+		Page     int   `json:"page"`
+		PageSize int   `json:"page_size"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Total != 1 || payload.Page != 2 || payload.PageSize != 5 || len(payload.Items) != 1 {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+	if len(payload.Items[0].Sources) != 1 || payload.Items[0].Sources[0].SourceType != "keyword" {
+		t.Fatalf("unexpected item sources: %+v", payload.Items[0].Sources)
+	}
+}
+
+func TestCandidateCreatorsDetail(t *testing.T) {
+	service := &stubCandidateService{
+		detail: discovery.CandidateDetailView{
+			Candidate: repo.CandidateCreator{ID: 9, Platform: "bilibili", UID: "789", Name: "候选详情", Status: "reviewing", Score: 91},
+			Sources: []repo.CandidateCreatorSource{
+				{SourceType: "keyword", SourceValue: "补档", SourceLabel: "关键词：补档", Weight: 15, DetailJSON: json.RawMessage(`{"keyword":"补档"}`)},
+			},
+			ScoreDetails: []repo.CandidateCreatorScoreDetail{
+				{FactorKey: "keyword_risk", FactorLabel: "命中高风险关键词", ScoreDelta: 15, DetailJSON: json.RawMessage(`{"keywords":["补档"]}`)},
+			},
+		},
+	}
+	r := newTestRouterWithCandidate(nil, nil, nil, service)
+	req := httptest.NewRequest(http.MethodGet, "/candidate-creators/9", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if service.detailID != 9 {
+		t.Fatalf("expected detail id 9, got %d", service.detailID)
+	}
+
+	var payload struct {
+		Candidate struct {
+			ID int64 `json:"id"`
+		} `json:"candidate"`
+		Sources []struct {
+			SourceValue string          `json:"source_value"`
+			DetailJSON  json.RawMessage `json:"detail_json"`
+		} `json:"sources"`
+		ScoreDetails []struct {
+			FactorKey string `json:"factor_key"`
+		} `json:"score_details"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Candidate.ID != 9 || len(payload.Sources) != 1 || len(payload.ScoreDetails) != 1 {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+	if payload.Sources[0].SourceValue != "补档" || len(payload.Sources[0].DetailJSON) == 0 {
+		t.Fatalf("unexpected source payload: %+v", payload.Sources[0])
+	}
+}
+
+func TestCandidateCreatorsDiscoverAndActions(t *testing.T) {
+	service := &stubCandidateService{
+		approveResp: repo.Creator{ID: 5, UID: "123", Name: "正式博主", Platform: "bilibili", Status: "active"},
+	}
+	r := newTestRouterWithCandidate(nil, nil, nil, service)
+
+	t.Run("discover", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/candidate-creators/discover", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+		if service.discoverCall != 1 {
+			t.Fatalf("expected discover called once, got %d", service.discoverCall)
+		}
+	})
+
+	t.Run("approve", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/candidate-creators/5/approve", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+		if service.approveID != 5 {
+			t.Fatalf("expected approve id 5, got %d", service.approveID)
+		}
+	})
+
+	t.Run("ignore", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/candidate-creators/6/ignore", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+		if service.ignoreID != 6 {
+			t.Fatalf("expected ignore id 6, got %d", service.ignoreID)
+		}
+	})
+
+	t.Run("block", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/candidate-creators/7/block", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+		if service.blockID != 7 {
+			t.Fatalf("expected block id 7, got %d", service.blockID)
+		}
+	})
+
+	t.Run("review", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/candidate-creators/8/review", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+		if service.reviewID != 8 {
+			t.Fatalf("expected review id 8, got %d", service.reviewID)
+		}
+	})
+}
+
+func TestCandidateCreatorsErrors(t *testing.T) {
+	t.Run("service unavailable", func(t *testing.T) {
+		r := newTestRouterWithCandidate(nil, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodGet, "/candidate-creators", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid method", func(t *testing.T) {
+		r := newTestRouterWithCandidate(nil, nil, nil, &stubCandidateService{})
+		req := httptest.NewRequest(http.MethodDelete, "/candidate-creators", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid query", func(t *testing.T) {
+		r := newTestRouterWithCandidate(nil, nil, nil, &stubCandidateService{})
+		req := httptest.NewRequest(http.MethodGet, "/candidate-creators?page=bad", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid id", func(t *testing.T) {
+		r := newTestRouterWithCandidate(nil, nil, nil, &stubCandidateService{})
+		req := httptest.NewRequest(http.MethodGet, "/candidate-creators/bad", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
 }
 
 func TestParsePathID(t *testing.T) {

@@ -164,7 +164,7 @@ func TestNewSuccess(t *testing.T) {
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
-	newRouter = func(_ httpapi.CreatorService, _ httpapi.JobService, gotDashboard httpapi.DashboardService, _ httpapi.ConfigService, _ *live.Broker) http.Handler {
+	newRouter = func(_ httpapi.CreatorService, _ httpapi.JobService, gotDashboard httpapi.DashboardService, _ httpapi.ConfigService, _ httpapi.CandidateService, _ *live.Broker) http.Handler {
 		if gotDashboard != dashboardSvc {
 			t.Fatalf("expected dashboard service injected")
 		}
@@ -272,7 +272,7 @@ func TestNewInjectsLiveBrokerIntoRouter(t *testing.T) {
 	}
 
 	var gotBroker *live.Broker
-	newRouter = func(_ httpapi.CreatorService, _ httpapi.JobService, _ httpapi.DashboardService, _ httpapi.ConfigService, broker *live.Broker) http.Handler {
+	newRouter = func(_ httpapi.CreatorService, _ httpapi.JobService, _ httpapi.DashboardService, _ httpapi.ConfigService, _ httpapi.CandidateService, broker *live.Broker) http.Handler {
 		gotBroker = broker
 		return http.NewServeMux()
 	}
@@ -346,7 +346,7 @@ func TestNewInjectsLiveBrokerIntoTaskChain(t *testing.T) {
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
-	newRouter = func(_ httpapi.CreatorService, _ httpapi.JobService, _ httpapi.DashboardService, _ httpapi.ConfigService, broker *live.Broker) http.Handler {
+	newRouter = func(_ httpapi.CreatorService, _ httpapi.JobService, _ httpapi.DashboardService, _ httpapi.ConfigService, _ httpapi.CandidateService, broker *live.Broker) http.Handler {
 		gotRouterBroker = broker
 		return http.NewServeMux()
 	}
@@ -421,7 +421,7 @@ func TestNewWiresDiscoveryComponents(t *testing.T) {
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, httpapi.CandidateService, *live.Broker) http.Handler {
 		return http.NewServeMux()
 	}
 	newDiscoveryService = func(candidates repo.CandidateRepository, creators *creator.Service, fetcher discovery.FetchEnqueuer, cfg config.DiscoveryConfig) *discovery.Service {
@@ -508,7 +508,7 @@ func TestNewCreatesLibrarySyncer(t *testing.T) {
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, httpapi.CandidateService, *live.Broker) http.Handler {
 		return http.NewServeMux()
 	}
 
@@ -601,7 +601,7 @@ func TestRunCanceled(t *testing.T) {
 	runStartupRecovery = func(context.Context, *App) error {
 		return nil
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, httpapi.CandidateService, *live.Broker) http.Handler {
 		return http.NewServeMux()
 	}
 
@@ -793,7 +793,7 @@ func TestRunStartsCreatorSyncer(t *testing.T) {
 	runStartupRecovery = func(context.Context, *App) error {
 		return nil
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, httpapi.CandidateService, *live.Broker) http.Handler {
 		return http.NewServeMux()
 	}
 	newCreatorSyncer = func(service *creator.Service, filePath string, interval time.Duration) creatorSyncRunner {
@@ -875,7 +875,7 @@ func TestRunStartsLibrarySyncerAndStartupRebuild(t *testing.T) {
 	runStartupRecovery = func(context.Context, *App) error {
 		return nil
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, httpapi.CandidateService, *live.Broker) http.Handler {
 		return http.NewServeMux()
 	}
 	newLibrarySyncer = func(root string, creators repo.CreatorRepository, videos repo.VideoRepository, broker *live.Broker, reconcileInterval time.Duration) libraryRunner {
@@ -949,7 +949,7 @@ func TestNewRunsMySQLMigrationsWhenEnabled(t *testing.T) {
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
 		return &stubHTTPDashboardService{}
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, httpapi.CandidateService, *live.Broker) http.Handler {
 		return http.NewServeMux()
 	}
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
@@ -1006,7 +1006,7 @@ func TestNewSkipsMySQLMigrationsWhenDisabled(t *testing.T) {
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
 		return &stubHTTPDashboardService{}
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, httpapi.CandidateService, *live.Broker) http.Handler {
 		return http.NewServeMux()
 	}
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
@@ -1070,7 +1070,7 @@ func TestNewCreatesAuthWatcherWhenCookieConfigured(t *testing.T) {
 	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
-	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, httpapi.CandidateService, *live.Broker) http.Handler {
 		return http.NewServeMux()
 	}
 	newAuthWatcher = func(client bilibili.AuthClient, reloadInterval, checkInterval time.Duration) authWatcherRunner {

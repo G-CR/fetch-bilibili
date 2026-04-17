@@ -6,6 +6,7 @@ import (
 
 	"fetch-bilibili/internal/creator"
 	"fetch-bilibili/internal/dashboard"
+	"fetch-bilibili/internal/discovery"
 	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/repo"
 )
@@ -49,7 +50,17 @@ type ConfigService interface {
 	Save(ctx context.Context, content string) (ConfigSaveResult, error)
 }
 
-func NewRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService, configSvc ConfigService, broker *live.Broker) http.Handler {
+type CandidateService interface {
+	ListCandidates(ctx context.Context, filter repo.CandidateListFilter) ([]discovery.CandidateView, int64, error)
+	GetCandidate(ctx context.Context, id int64) (discovery.CandidateDetailView, error)
+	TriggerDiscover(ctx context.Context) error
+	Approve(ctx context.Context, id int64) (repo.Creator, error)
+	Ignore(ctx context.Context, id int64) error
+	Block(ctx context.Context, id int64) error
+	Review(ctx context.Context, id int64) error
+}
+
+func NewRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc DashboardService, configSvc ConfigService, candidateSvc CandidateService, broker *live.Broker) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -66,6 +77,9 @@ func NewRouter(creatorSvc CreatorService, jobSvc JobService, dashboardSvc Dashbo
 	mux.Handle("/events/stream", newEventsStreamHandler(broker))
 	mux.Handle("/videos", newVideoHandler(dashboardSvc))
 	mux.Handle("/videos/", newVideoItemHandler(jobSvc, dashboardSvc))
+	mux.Handle("/candidate-creators", newCandidateHandler(candidateSvc))
+	mux.Handle("/candidate-creators/discover", newCandidateDiscoverHandler(candidateSvc))
+	mux.Handle("/candidate-creators/", newCandidateItemHandler(candidateSvc))
 	mux.Handle("/system/status", newSystemStatusHandler(dashboardSvc))
 	mux.Handle("/system/config", newSystemConfigHandler(configSvc))
 	mux.Handle("/storage/stats", newStorageStatsHandler(dashboardSvc))

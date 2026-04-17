@@ -111,6 +111,11 @@ type configEditorAdapter struct {
 	editor *config.Editor
 }
 
+type candidateAPIAdapter struct {
+	service *discovery.Service
+	jobs    *jobs.Service
+}
+
 func (a configEditorAdapter) Load(ctx context.Context) (httpapi.ConfigDocument, error) {
 	doc, err := a.editor.Load(ctx)
 	if err != nil {
@@ -132,6 +137,37 @@ func (a configEditorAdapter) Save(ctx context.Context, content string) (httpapi.
 		RestartScheduled: result.RestartScheduled,
 		Path:             result.Path,
 	}, nil
+}
+
+func (a candidateAPIAdapter) ListCandidates(ctx context.Context, filter repo.CandidateListFilter) ([]discovery.CandidateView, int64, error) {
+	return a.service.ListCandidates(ctx, filter)
+}
+
+func (a candidateAPIAdapter) GetCandidate(ctx context.Context, id int64) (discovery.CandidateDetailView, error) {
+	return a.service.GetCandidate(ctx, id)
+}
+
+func (a candidateAPIAdapter) TriggerDiscover(ctx context.Context) error {
+	if a.jobs == nil {
+		return errors.New("候选池服务未初始化")
+	}
+	return a.jobs.EnqueueDiscover(ctx)
+}
+
+func (a candidateAPIAdapter) Approve(ctx context.Context, id int64) (repo.Creator, error) {
+	return a.service.Approve(ctx, id)
+}
+
+func (a candidateAPIAdapter) Ignore(ctx context.Context, id int64) error {
+	return a.service.Ignore(ctx, id)
+}
+
+func (a candidateAPIAdapter) Block(ctx context.Context, id int64) error {
+	return a.service.Block(ctx, id)
+}
+
+func (a candidateAPIAdapter) Review(ctx context.Context, id int64) error {
+	return a.service.Review(ctx, id)
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -212,7 +248,7 @@ func New(cfg config.Config) (*App, error) {
 		restartCh:    make(chan struct{}, 1),
 	}
 	configEditor := config.NewEditor(resolveConfigPath(), app.requestRestart)
-	router := newRouter(creatorService, jobService, dashboardService, configEditorAdapter{editor: configEditor}, broker)
+	router := newRouter(creatorService, jobService, dashboardService, configEditorAdapter{editor: configEditor}, candidateAPIAdapter{service: candidateService, jobs: jobService}, broker)
 	server := &http.Server{
 		Addr:         cfg.Server.Addr,
 		Handler:      router,
