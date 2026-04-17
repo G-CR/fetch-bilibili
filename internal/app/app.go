@@ -16,6 +16,7 @@ import (
 	"fetch-bilibili/internal/creator"
 	"fetch-bilibili/internal/dashboard"
 	"fetch-bilibili/internal/db"
+	"fetch-bilibili/internal/discovery"
 	"fetch-bilibili/internal/jobs"
 	"fetch-bilibili/internal/library"
 	"fetch-bilibili/internal/live"
@@ -50,11 +51,22 @@ type libraryRunner interface {
 
 var newMySQL = db.NewMySQL
 var runMySQLMigrations = db.RunMySQLMigrations
-var newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
-	return scheduler.New(cfg, jobs, nil)
+var newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	return scheduler.New(cfg, discoveryCfg, jobs, nil)
 }
 var newJobService = func(jobRepo repo.JobRepository, broker *live.Broker) *jobs.Service {
 	return jobs.NewService(jobRepo, broker)
+}
+var newDiscoveryService = func(candidates repo.CandidateRepository, creators *creator.Service, fetcher discovery.FetchEnqueuer, cfg config.DiscoveryConfig) *discovery.Service {
+	return discovery.NewService(candidates, creators, fetcher, cfg)
+}
+var newDiscoveryRunner = func(client *bilibili.Client, candidates repo.CandidateRepository, cfg config.DiscoveryConfig) worker.DiscoveryRunner {
+	return discovery.NewKeywordDiscoverer(client, candidates, discovery.NewScorer(cfg), cfg)
+}
+var newWorkerHandler = func(creators repo.CreatorRepository, videos repo.VideoRepository, videoFiles repo.VideoFileRepository, jobs repo.JobRepository, client *bilibili.Client, stableDays int, storageRoot string, globalQPS, perCreatorQPS int, discoveryRunner worker.DiscoveryRunner) *worker.DefaultHandler {
+	handler := worker.NewDefaultHandler(creators, videos, videoFiles, jobs, client, stableDays, storageRoot, globalQPS, perCreatorQPS, nil)
+	handler.SetDiscoveryRunner(discoveryRunner)
+	return handler
 }
 var newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
 	return worker.New(repo, handler, workers, pollEvery, nil, broker)
@@ -81,17 +93,18 @@ const libraryReconcileInterval = 6 * time.Hour
 var ErrRestartRequested = errors.New("restart requested")
 
 type App struct {
-	cfg         config.Config
-	db          *sql.DB
-	repos       repo.Repositories
-	scheduler   schedulerRunner
-	workers     workerRunner
-	authWatcher authWatcherRunner
-	creatorSync creatorSyncRunner
-	librarySync libraryRunner
-	broker      *live.Broker
-	server      *http.Server
-	restartCh   chan struct{}
+	cfg          config.Config
+	db           *sql.DB
+	repos        repo.Repositories
+	scheduler    schedulerRunner
+	workers      workerRunner
+	authWatcher  authWatcherRunner
+	creatorSync  creatorSyncRunner
+	librarySync  libraryRunner
+	candidateSvc *discovery.Service
+	broker       *live.Broker
+	server       *http.Server
+	restartCh    chan struct{}
 }
 
 type configEditorAdapter struct {
@@ -139,11 +152,12 @@ func New(cfg config.Config) (*App, error) {
 		Videos:     repoImpl.Videos(),
 		VideoFiles: repoImpl.VideoFiles(),
 		Jobs:       repoImpl.Jobs(),
+		Candidates: repoImpl.Candidates(),
 	}
 
 	broker := live.NewBroker()
 	jobService := newJobService(repos.Jobs, broker)
-	sched, err := newScheduler(cfg.Scheduler, jobService)
+	sched, err := newScheduler(cfg.Scheduler, cfg.Discovery, jobService)
 	if err != nil {
 		_ = database.Close()
 		return nil, err
@@ -153,7 +167,9 @@ func New(cfg config.Config) (*App, error) {
 	client.SetPublisher(broker)
 	creatorService := creator.NewService(repos.Creators, client, nil)
 	creatorService.SetPublisher(broker)
-	handler := worker.NewDefaultHandler(
+	candidateService := newDiscoveryService(repos.Candidates, creatorService, jobService, cfg.Discovery)
+	discoveryRunner := newDiscoveryRunner(client, repos.Candidates, cfg.Discovery)
+	handler := newWorkerHandler(
 		repos.Creators,
 		repos.Videos,
 		repos.VideoFiles,
@@ -163,7 +179,7 @@ func New(cfg config.Config) (*App, error) {
 		cfg.Storage.RootDir,
 		cfg.Limits.GlobalQPS,
 		cfg.Limits.PerCreatorQPS,
-		nil,
+		discoveryRunner,
 	)
 	handler.SetPublisher(broker)
 	handler.SetStoragePolicy(cfg.Storage.MaxBytes, cfg.Storage.SafeBytes, cfg.Storage.KeepOutOfPrint)
@@ -183,16 +199,17 @@ func New(cfg config.Config) (*App, error) {
 
 	dashboardService := newDashboardService(database, repos.Creators, repos.Videos, repos.Jobs, client, cfg)
 	app := &App{
-		cfg:         cfg,
-		db:          database,
-		repos:       repos,
-		scheduler:   sched,
-		workers:     pool,
-		authWatcher: authWatcher,
-		creatorSync: creatorSync,
-		librarySync: librarySync,
-		broker:      broker,
-		restartCh:   make(chan struct{}, 1),
+		cfg:          cfg,
+		db:           database,
+		repos:        repos,
+		scheduler:    sched,
+		workers:      pool,
+		authWatcher:  authWatcher,
+		creatorSync:  creatorSync,
+		librarySync:  librarySync,
+		candidateSvc: candidateService,
+		broker:       broker,
+		restartCh:    make(chan struct{}, 1),
 	}
 	configEditor := config.NewEditor(resolveConfigPath(), app.requestRestart)
 	router := newRouter(creatorService, jobService, dashboardService, configEditorAdapter{editor: configEditor}, broker)

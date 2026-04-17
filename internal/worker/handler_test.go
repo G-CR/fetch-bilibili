@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"fetch-bilibili/internal/discovery"
 	"fetch-bilibili/internal/jobs"
 	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/platform/bilibili"
@@ -17,6 +18,7 @@ import (
 type fakeCreators struct {
 	list []repo.Creator
 	err  error
+	find map[int64]repo.Creator
 }
 
 func (f *fakeCreators) Create(ctx context.Context, c repo.Creator) (int64, error) {
@@ -40,6 +42,11 @@ func (f *fakeCreators) DeleteByID(ctx context.Context, id int64) (int64, error) 
 }
 
 func (f *fakeCreators) FindByID(ctx context.Context, id int64) (repo.Creator, error) {
+	if f.find != nil {
+		if creator, ok := f.find[id]; ok {
+			return creator, nil
+		}
+	}
 	return repo.Creator{}, repo.ErrNotImplemented
 }
 
@@ -357,6 +364,20 @@ func (s *stubHandlerEventPublisher) Publish(evt live.Event) {
 	s.events = append(s.events, evt)
 }
 
+type stubDiscoveryRunner struct {
+	calls  int
+	result discovery.KeywordDiscoverResult
+	err    error
+}
+
+func (s *stubDiscoveryRunner) Discover(ctx context.Context) (discovery.KeywordDiscoverResult, error) {
+	s.calls++
+	if s.err != nil {
+		return discovery.KeywordDiscoverResult{}, s.err
+	}
+	return s.result, nil
+}
+
 func mustFindEventByType(t *testing.T, events []live.Event, eventType string) live.Event {
 	t.Helper()
 
@@ -452,6 +473,35 @@ func TestHandleFetchEnqueueDownload(t *testing.T) {
 	}
 	if jobsRepo.enqueued[0].Type != jobs.TypeDownload {
 		t.Fatalf("expected download job")
+	}
+}
+
+func TestHandleFetchTargetsSingleCreatorFromPayload(t *testing.T) {
+	creators := &fakeCreators{
+		list: []repo.Creator{
+			{ID: 1, UID: "111"},
+			{ID: 2, UID: "222"},
+		},
+		find: map[int64]repo.Creator{
+			2: {ID: 2, UID: "222"},
+		},
+	}
+	videos := &fakeVideos{}
+	jobsRepo := &fakeJobs{}
+	client := &stubClient{list: []bilibili.VideoMeta{{VideoID: "v1"}}}
+	h := NewDefaultHandler(creators, videos, nil, jobsRepo, client, 30, "/tmp", 0, 0, nil)
+
+	if err := h.Handle(context.Background(), repo.Job{
+		Type:    jobs.TypeFetch,
+		Payload: map[string]any{"creator_id": int64(2)},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(jobsRepo.enqueued) != 1 {
+		t.Fatalf("expected 1 download job, got %d", len(jobsRepo.enqueued))
+	}
+	if got := jobsRepo.enqueued[0].Payload["video_id"]; got != int64(1) {
+		t.Fatalf("expected video_id 1, got %#v", got)
 	}
 }
 
@@ -588,6 +638,41 @@ func TestHandleCheckSingleVideoFromPayload(t *testing.T) {
 	}
 	if len(videos.updates) != 1 || videos.updates[0].id != 3 {
 		t.Fatalf("expected one update for target video, got %+v", videos.updates)
+	}
+}
+
+func TestHandleDiscoverCallsRunner(t *testing.T) {
+	runner := &stubDiscoveryRunner{}
+	h := NewDefaultHandler(&fakeCreators{}, &fakeVideos{}, nil, &fakeJobs{}, &stubClient{}, 30, "/tmp", 0, 0, nil)
+	h.SetDiscoveryRunner(runner)
+
+	if err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeDiscover}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("expected discovery runner called once, got %d", runner.calls)
+	}
+}
+
+func TestHandleDiscoverReturnsRunnerError(t *testing.T) {
+	runner := &stubDiscoveryRunner{err: errors.New("discover failed")}
+	jobsRepo := &fakeJobs{}
+	videos := &fakeVideos{}
+	h := NewDefaultHandler(&fakeCreators{}, videos, nil, jobsRepo, &stubClient{}, 30, "/tmp", 0, 0, nil)
+	h.SetDiscoveryRunner(runner)
+
+	err := h.Handle(context.Background(), repo.Job{Type: jobs.TypeDiscover})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if runner.calls != 1 {
+		t.Fatalf("expected discovery runner called once, got %d", runner.calls)
+	}
+	if len(jobsRepo.enqueued) != 0 {
+		t.Fatalf("discover should not enqueue download jobs, got %+v", jobsRepo.enqueued)
+	}
+	if len(videos.updates) != 0 {
+		t.Fatalf("discover should not update video state, got %+v", videos.updates)
 	}
 }
 

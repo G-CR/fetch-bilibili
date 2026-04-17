@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"fetch-bilibili/internal/discovery"
 	"fetch-bilibili/internal/jobs"
 	"fetch-bilibili/internal/library"
 	"fetch-bilibili/internal/live"
@@ -24,6 +25,10 @@ type VideoClient interface {
 	ListVideos(ctx context.Context, uid string) ([]bilibili.VideoMeta, error)
 	CheckAvailable(ctx context.Context, videoID string) (bool, error)
 	Download(ctx context.Context, videoID, dst string) (int64, error)
+}
+
+type DiscoveryRunner interface {
+	Discover(ctx context.Context) (discovery.KeywordDiscoverResult, error)
 }
 
 type stateEventPublisher interface {
@@ -52,6 +57,7 @@ type DefaultHandler struct {
 	videoFiles       repo.VideoFileRepository
 	jobs             repo.JobRepository
 	client           VideoClient
+	discoveryRunner  DiscoveryRunner
 	stableDays       int
 	storageRoot      string
 	logger           *log.Logger
@@ -104,6 +110,10 @@ func (h *DefaultHandler) SetPublisher(publisher stateEventPublisher) {
 	h.publisher = publisher
 }
 
+func (h *DefaultHandler) SetDiscoveryRunner(runner DiscoveryRunner) {
+	h.discoveryRunner = runner
+}
+
 func (h *DefaultHandler) SetStoragePolicy(maxBytes, safeBytes int64, keepOutOfPrint bool) {
 	h.storageMax = maxBytes
 	if safeBytes <= 0 && maxBytes > 0 {
@@ -124,26 +134,40 @@ func (h *DefaultHandler) SetCleanupRetention(hours int) {
 func (h *DefaultHandler) Handle(ctx context.Context, job repo.Job) error {
 	switch job.Type {
 	case jobs.TypeFetch:
-		return h.handleFetch(ctx)
+		return h.handleFetch(ctx, job)
 	case jobs.TypeCheck:
 		return h.handleCheck(ctx, job)
 	case jobs.TypeCleanup:
 		return h.handleCleanup(ctx)
 	case jobs.TypeDownload:
 		return h.handleDownload(ctx, job)
+	case jobs.TypeDiscover:
+		return h.handleDiscover(ctx)
 	default:
 		return fmt.Errorf("未知任务类型: %s", job.Type)
 	}
 }
 
-func (h *DefaultHandler) handleFetch(ctx context.Context) error {
+func (h *DefaultHandler) handleFetch(ctx context.Context, job repo.Job) error {
 	if h.creators == nil || h.videos == nil || h.client == nil {
 		return errors.New("拉取处理器未初始化")
 	}
 
-	creators, err := h.creators.ListActive(ctx, h.fetchLimit)
-	if err != nil {
-		return err
+	var (
+		creators []repo.Creator
+		err      error
+	)
+	if creatorID, ok := payloadInt64(job.Payload, "creator_id"); ok && creatorID > 0 {
+		creator, err := h.creators.FindByID(ctx, creatorID)
+		if err != nil {
+			return err
+		}
+		creators = []repo.Creator{creator}
+	} else {
+		creators, err = h.creators.ListActive(ctx, h.fetchLimit)
+		if err != nil {
+			return err
+		}
 	}
 	if len(creators) == 0 {
 		return nil
@@ -212,6 +236,14 @@ func (h *DefaultHandler) handleFetch(ctx context.Context) error {
 		}
 	}
 	return lastErr
+}
+
+func (h *DefaultHandler) handleDiscover(ctx context.Context) error {
+	if h.discoveryRunner == nil {
+		return errors.New("发现处理器未初始化")
+	}
+	_, err := h.discoveryRunner.Discover(ctx)
+	return err
 }
 
 func (h *DefaultHandler) handleCleanup(ctx context.Context) error {

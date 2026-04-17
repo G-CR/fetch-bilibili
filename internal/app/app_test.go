@@ -14,6 +14,7 @@ import (
 	"fetch-bilibili/internal/config"
 	"fetch-bilibili/internal/creator"
 	"fetch-bilibili/internal/dashboard"
+	"fetch-bilibili/internal/discovery"
 	"fetch-bilibili/internal/jobs"
 	"fetch-bilibili/internal/live"
 	"fetch-bilibili/internal/platform/bilibili"
@@ -95,6 +96,12 @@ func (s *stubLibrarySyncer) RebuildAll(ctx context.Context) error {
 
 type stubHTTPDashboardService struct{}
 
+type stubAppDiscoveryRunner struct{}
+
+func (s *stubAppDiscoveryRunner) Discover(ctx context.Context) (discovery.KeywordDiscoverResult, error) {
+	return discovery.KeywordDiscoverResult{}, nil
+}
+
 func (s *stubHTTPDashboardService) ListJobs(context.Context, repo.JobListFilter) ([]repo.Job, error) {
 	return nil, nil
 }
@@ -142,7 +149,7 @@ func TestNewSuccess(t *testing.T) {
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
 		return db, nil
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
 	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
@@ -206,7 +213,7 @@ func TestNewSchedulerError(t *testing.T) {
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
 		return db, nil
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return nil, errors.New("scheduler error")
 	}
 	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
@@ -251,7 +258,7 @@ func TestNewInjectsLiveBrokerIntoRouter(t *testing.T) {
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
 		return db, nil
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
 	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
@@ -326,7 +333,7 @@ func TestNewInjectsLiveBrokerIntoTaskChain(t *testing.T) {
 		gotJobServiceBroker = broker
 		return jobs.NewService(repo, nil)
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
 	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
@@ -364,6 +371,104 @@ func TestNewInjectsLiveBrokerIntoTaskChain(t *testing.T) {
 	}
 }
 
+func TestNewWiresDiscoveryComponents(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	origMySQL := newMySQL
+	origScheduler := newScheduler
+	origWorker := newWorker
+	origRouter := newRouter
+	origDashboardService := newDashboardService
+	origRunMySQLMigrations := runMySQLMigrations
+	origDiscoveryService := newDiscoveryService
+	origDiscoveryRunner := newDiscoveryRunner
+	origWorkerHandler := newWorkerHandler
+	defer func() {
+		newMySQL = origMySQL
+		newScheduler = origScheduler
+		newWorker = origWorker
+		newRouter = origRouter
+		newDashboardService = origDashboardService
+		runMySQLMigrations = origRunMySQLMigrations
+		newDiscoveryService = origDiscoveryService
+		newDiscoveryRunner = origDiscoveryRunner
+		newWorkerHandler = origWorkerHandler
+	}()
+
+	var (
+		discoveryServiceCalled bool
+		discoveryRunnerCalled  bool
+		gotHandlerRunner       worker.DiscoveryRunner
+	)
+	runnerStub := &stubAppDiscoveryRunner{}
+
+	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
+		return db, nil
+	}
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+		return &stubScheduler{}, nil
+	}
+	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
+		return &stubWorker{}
+	}
+	newDashboardService = func(db *sql.DB, creators repo.CreatorRepository, videos repo.VideoRepository, jobs repo.JobRepository, auth bilibili.AuthClient, cfg config.Config) httpapi.DashboardService {
+		return &stubHTTPDashboardService{}
+	}
+	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
+		return nil
+	}
+	newRouter = func(httpapi.CreatorService, httpapi.JobService, httpapi.DashboardService, httpapi.ConfigService, *live.Broker) http.Handler {
+		return http.NewServeMux()
+	}
+	newDiscoveryService = func(candidates repo.CandidateRepository, creators *creator.Service, fetcher discovery.FetchEnqueuer, cfg config.DiscoveryConfig) *discovery.Service {
+		discoveryServiceCalled = true
+		if candidates == nil {
+			t.Fatalf("expected candidate repository to be wired")
+		}
+		return discovery.NewService(candidates, creators, fetcher, cfg)
+	}
+	newDiscoveryRunner = func(client *bilibili.Client, candidates repo.CandidateRepository, cfg config.DiscoveryConfig) worker.DiscoveryRunner {
+		discoveryRunnerCalled = true
+		if client == nil {
+			t.Fatalf("expected bilibili client to be wired")
+		}
+		if candidates == nil {
+			t.Fatalf("expected candidate repository to be wired")
+		}
+		return runnerStub
+	}
+	newWorkerHandler = func(creators repo.CreatorRepository, videos repo.VideoRepository, videoFiles repo.VideoFileRepository, jobsRepo repo.JobRepository, client *bilibili.Client, stableDays int, storageRoot string, globalQPS, perCreatorQPS int, discoveryRunner worker.DiscoveryRunner) *worker.DefaultHandler {
+		gotHandlerRunner = discoveryRunner
+		return worker.NewDefaultHandler(creators, videos, videoFiles, jobsRepo, client, stableDays, storageRoot, globalQPS, perCreatorQPS, nil)
+	}
+
+	cfg := config.Default()
+	cfg.Storage.RootDir = "/tmp"
+	cfg.MySQL.DSN = "dsn"
+	cfg.Server.Addr = "127.0.0.1:0"
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+	if !discoveryServiceCalled {
+		t.Fatalf("expected discovery service to be created")
+	}
+	if !discoveryRunnerCalled {
+		t.Fatalf("expected discovery runner to be created")
+	}
+	if gotHandlerRunner != runnerStub {
+		t.Fatalf("expected worker handler to receive discovery runner")
+	}
+	if app.candidateSvc == nil {
+		t.Fatalf("expected app to keep candidate service")
+	}
+}
+
 func TestNewCreatesLibrarySyncer(t *testing.T) {
 	db, _, err := sqlmock.New()
 	if err != nil {
@@ -391,7 +496,7 @@ func TestNewCreatesLibrarySyncer(t *testing.T) {
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
 		return db, nil
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
 	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
@@ -481,7 +586,7 @@ func TestRunCanceled(t *testing.T) {
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
 		return db, nil
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return schedulerStub, nil
 	}
 	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
@@ -673,7 +778,7 @@ func TestRunStartsCreatorSyncer(t *testing.T) {
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
 		return db, nil
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
 	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
@@ -755,7 +860,7 @@ func TestRunStartsLibrarySyncerAndStartupRebuild(t *testing.T) {
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
 		return db, nil
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
 	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
@@ -835,7 +940,7 @@ func TestNewRunsMySQLMigrationsWhenEnabled(t *testing.T) {
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
 		return db, nil
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
 	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
@@ -892,7 +997,7 @@ func TestNewSkipsMySQLMigrationsWhenDisabled(t *testing.T) {
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
 		return db, nil
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
 	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {
@@ -953,7 +1058,7 @@ func TestNewCreatesAuthWatcherWhenCookieConfigured(t *testing.T) {
 	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
 		return db, nil
 	}
-	newScheduler = func(cfg config.SchedulerConfig, jobs scheduler.JobService) (schedulerRunner, error) {
+	newScheduler = func(cfg config.SchedulerConfig, discoveryCfg config.DiscoveryConfig, jobs scheduler.JobService) (schedulerRunner, error) {
 		return &stubScheduler{}, nil
 	}
 	newWorker = func(repo repo.JobRepository, handler worker.Handler, workers int, pollEvery time.Duration, broker *live.Broker) workerRunner {

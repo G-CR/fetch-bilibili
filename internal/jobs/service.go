@@ -40,6 +40,20 @@ func (s *Service) EnqueueCleanup(ctx context.Context) error {
 	return s.enqueue(ctx, repo.Job{Type: TypeCleanup, Status: StatusQueued})
 }
 
+func (s *Service) EnqueueDiscover(ctx context.Context) error {
+	return s.enqueue(ctx, repo.Job{Type: TypeDiscover, Status: StatusQueued})
+}
+
+func (s *Service) EnqueueFetchCreator(ctx context.Context, creatorID int64) error {
+	return s.enqueue(ctx, repo.Job{
+		Type:   TypeFetch,
+		Status: StatusQueued,
+		Payload: map[string]any{
+			"creator_id": creatorID,
+		},
+	})
+}
+
 func (s *Service) EnqueueDownload(ctx context.Context, videoID int64) error {
 	return s.enqueue(ctx, repo.Job{
 		Type:   TypeDownload,

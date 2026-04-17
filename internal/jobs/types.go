@@ -7,6 +7,7 @@ const (
 	TypeDownload = "download"
 	TypeCheck    = "check"
 	TypeCleanup  = "cleanup"
+	TypeDiscover = "discover"
 )
 
 const (

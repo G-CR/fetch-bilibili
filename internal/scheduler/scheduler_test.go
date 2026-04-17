@@ -11,9 +11,10 @@ import (
 )
 
 type counterJobs struct {
-	fetch   int64
-	check   int64
-	cleanup int64
+	fetch    int64
+	check    int64
+	cleanup  int64
+	discover int64
 }
 
 func (c *counterJobs) EnqueueFetch(ctx context.Context) error {
@@ -31,16 +32,21 @@ func (c *counterJobs) EnqueueCleanup(ctx context.Context) error {
 	return nil
 }
 
+func (c *counterJobs) EnqueueDiscover(ctx context.Context) error {
+	atomic.AddInt64(&c.discover, 1)
+	return nil
+}
+
 func TestNewInvalidIntervals(t *testing.T) {
 	cfg := config.SchedulerConfig{FetchInterval: 0, CheckInterval: time.Second, CleanupInterval: time.Second}
-	if _, err := New(cfg, &NoopJobService{}, nil); err == nil {
+	if _, err := New(cfg, config.DiscoveryConfig{}, &NoopJobService{}, nil); err == nil {
 		t.Fatalf("expected error for invalid fetch interval")
 	}
 }
 
 func TestStartWithNilJobs(t *testing.T) {
 	cfg := config.SchedulerConfig{FetchInterval: 10 * time.Millisecond, CheckInterval: 10 * time.Millisecond, CleanupInterval: 10 * time.Millisecond}
-	s, err := New(cfg, nil, nil)
+	s, err := New(cfg, config.DiscoveryConfig{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,7 +58,7 @@ func TestStartWithNilJobs(t *testing.T) {
 func TestStartTriggersJobs(t *testing.T) {
 	cfg := config.SchedulerConfig{FetchInterval: 5 * time.Millisecond, CheckInterval: 5 * time.Millisecond, CleanupInterval: 5 * time.Millisecond}
 	jobs := &counterJobs{}
-	s, err := New(cfg, jobs, nil)
+	s, err := New(cfg, config.DiscoveryConfig{}, jobs, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,10 +98,15 @@ func (e *errJobs) EnqueueCleanup(ctx context.Context) error {
 	return errors.New("cleanup error")
 }
 
+func (e *errJobs) EnqueueDiscover(ctx context.Context) error {
+	atomic.AddInt64(&e.count, 1)
+	return errors.New("discover error")
+}
+
 func TestStartLogsErrors(t *testing.T) {
 	cfg := config.SchedulerConfig{FetchInterval: 5 * time.Millisecond, CheckInterval: 5 * time.Millisecond, CleanupInterval: 5 * time.Millisecond}
 	jobs := &errJobs{}
-	s, err := New(cfg, jobs, nil)
+	s, err := New(cfg, config.DiscoveryConfig{}, jobs, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,5 +118,43 @@ func TestStartLogsErrors(t *testing.T) {
 
 	if atomic.LoadInt64(&jobs.count) == 0 {
 		t.Fatalf("expected error jobs to be scheduled")
+	}
+}
+
+func TestSchedulerDoesNotTriggerDiscoverWhenDisabled(t *testing.T) {
+	cfg := config.SchedulerConfig{FetchInterval: 5 * time.Millisecond, CheckInterval: 5 * time.Millisecond, CleanupInterval: 5 * time.Millisecond}
+	discoveryCfg := config.DiscoveryConfig{Enabled: false, Interval: 5 * time.Millisecond}
+	jobs := &counterJobs{}
+	s, err := New(cfg, discoveryCfg, jobs, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	go s.Start(ctx)
+	<-ctx.Done()
+
+	if atomic.LoadInt64(&jobs.discover) != 0 {
+		t.Fatalf("expected discover not scheduled when disabled, got %d", atomic.LoadInt64(&jobs.discover))
+	}
+}
+
+func TestSchedulerTriggersDiscoverWhenEnabled(t *testing.T) {
+	cfg := config.SchedulerConfig{FetchInterval: 20 * time.Millisecond, CheckInterval: 20 * time.Millisecond, CleanupInterval: 20 * time.Millisecond}
+	discoveryCfg := config.DiscoveryConfig{Enabled: true, Interval: 5 * time.Millisecond}
+	jobs := &counterJobs{}
+	s, err := New(cfg, discoveryCfg, jobs, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	go s.Start(ctx)
+	<-ctx.Done()
+
+	if atomic.LoadInt64(&jobs.discover) == 0 {
+		t.Fatalf("expected discover jobs to be scheduled")
 	}
 }

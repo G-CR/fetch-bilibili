@@ -152,6 +152,34 @@ func TestEnqueueCheckVideo(t *testing.T) {
 	}
 }
 
+func TestEnqueueDiscover(t *testing.T) {
+	repo := &stubJobRepo{}
+	svc := NewService(repo, nil)
+	if err := svc.EnqueueDiscover(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.last.Type != TypeDiscover {
+		t.Fatalf("expected type discover, got %+v", repo.last)
+	}
+	if repo.last.Status != StatusQueued {
+		t.Fatalf("expected status queued, got %+v", repo.last)
+	}
+}
+
+func TestEnqueueFetchCreator(t *testing.T) {
+	repo := &stubJobRepo{}
+	svc := NewService(repo, nil)
+	if err := svc.EnqueueFetchCreator(context.Background(), 123); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.last.Type != TypeFetch {
+		t.Fatalf("expected type fetch, got %+v", repo.last)
+	}
+	if len(repo.last.Payload) != 1 || repo.last.Payload["creator_id"] != int64(123) {
+		t.Fatalf("expected creator-scoped payload, got %+v", repo.last.Payload)
+	}
+}
+
 func TestEnqueueMethodsPublishesEvent(t *testing.T) {
 	testCases := []struct {
 		name          string
