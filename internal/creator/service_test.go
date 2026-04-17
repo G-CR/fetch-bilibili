@@ -268,6 +268,33 @@ func TestServiceUpsertByNameUsesResolvedName(t *testing.T) {
 	}
 }
 
+func TestServiceUpsertCreatorPublishesEvent(t *testing.T) {
+	repoStub := &stubRepo{storeOnUpsert: true}
+	publisher := &stubCreatorEventPublisher{}
+	svc := NewService(repoStub, nil, nil)
+	svc.SetPublisher(publisher)
+
+	creator, err := svc.UpsertCreator(context.Background(), repo.Creator{
+		Platform:      "bilibili",
+		UID:           "321",
+		Name:          "候选转正",
+		FollowerCount: 99,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("UpsertCreator error: %v", err)
+	}
+	if creator.ID == 0 || creator.FollowerCount != 99 {
+		t.Fatalf("unexpected creator: %+v", creator)
+	}
+	if repoStub.last.UID != "321" || repoStub.last.FollowerCount != 99 {
+		t.Fatalf("unexpected repo upsert input: %+v", repoStub.last)
+	}
+	if len(publisher.events) != 1 {
+		t.Fatalf("expected one event, got %d", len(publisher.events))
+	}
+}
+
 func TestServiceUpsertByUIDBackfillsMissingName(t *testing.T) {
 	repoStub := &stubRepo{}
 	resolver := &stubResolver{

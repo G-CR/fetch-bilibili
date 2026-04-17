@@ -59,6 +59,25 @@ func (s *Service) Upsert(ctx context.Context, entry Entry) (repo.Creator, error)
 	if err != nil {
 		return repo.Creator{}, err
 	}
+	return s.UpsertCreator(ctx, creator)
+}
+
+func (s *Service) UpsertCreator(ctx context.Context, creator repo.Creator) (repo.Creator, error) {
+	if s.repo == nil {
+		return repo.Creator{}, errors.New("博主服务未初始化")
+	}
+	if strings.TrimSpace(creator.UID) == "" {
+		return repo.Creator{}, errors.New("uid 或 name 必须提供")
+	}
+	if strings.TrimSpace(creator.Platform) == "" {
+		creator.Platform = "bilibili"
+	}
+	if strings.TrimSpace(creator.Status) == "" {
+		creator.Status = "active"
+	}
+	if strings.TrimSpace(creator.Name) == "" {
+		creator.Name = s.resolveNameByUID(ctx, creator.UID)
+	}
 
 	id, err := s.repo.Upsert(ctx, creator)
 	if err != nil {
