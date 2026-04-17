@@ -26,6 +26,42 @@ scheduler:
   cleanup_interval: "24h"
   check_stable_days: 30
 
+discovery:
+  enabled: true
+  interval: "24h"
+  max_keywords_per_run: 20
+  max_pages_per_keyword: 2
+  max_candidates_per_run: 100
+  max_related_per_creator: 10
+  auto_enqueue_fetch_on_approve: true
+  score_version: "v1"
+  keywords:
+    - "影视剪辑"
+    - "直播切片"
+    - "补档"
+    - "重传"
+    - "演唱会"
+    - "MV"
+  score_weights:
+    keyword_risk:
+      max: 40
+    activity_30d:
+      low: 5
+      medium: 10
+      high: 15
+    similarity:
+      weak: 5
+      medium: 10
+      strong: 20
+    deletion_trace:
+      single: 10
+      max: 20
+    account_size:
+      small_bonus: 10
+      oversize_penalty: -5
+    feedback:
+      ignore_penalty: -15
+
 limits:
   global_qps: 2
   per_creator_qps: 1

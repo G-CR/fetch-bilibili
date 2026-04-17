@@ -13,6 +13,7 @@ type Config struct {
 	Server    ServerConfig    `yaml:"server"`
 	Storage   StorageConfig   `yaml:"storage"`
 	Scheduler SchedulerConfig `yaml:"scheduler"`
+	Discovery DiscoveryConfig `yaml:"discovery"`
 	Limits    LimitsConfig    `yaml:"limits"`
 	Creators  CreatorsConfig  `yaml:"creators"`
 	Bilibili  BilibiliConfig  `yaml:"bilibili"`
@@ -52,6 +53,58 @@ type SchedulerConfig struct {
 	CheckInterval   time.Duration `yaml:"check_interval"`
 	CleanupInterval time.Duration `yaml:"cleanup_interval"`
 	CheckStableDays int           `yaml:"check_stable_days"`
+}
+
+type DiscoveryConfig struct {
+	Enabled                   bool                  `yaml:"enabled"`
+	Interval                  time.Duration         `yaml:"interval"`
+	MaxKeywordsPerRun         int                   `yaml:"max_keywords_per_run"`
+	MaxPagesPerKeyword        int                   `yaml:"max_pages_per_keyword"`
+	MaxCandidatesPerRun       int                   `yaml:"max_candidates_per_run"`
+	MaxRelatedPerCreator      int                   `yaml:"max_related_per_creator"`
+	AutoEnqueueFetchOnApprove bool                  `yaml:"auto_enqueue_fetch_on_approve"`
+	ScoreVersion              string                `yaml:"score_version"`
+	Keywords                  []string              `yaml:"keywords"`
+	ScoreWeights              DiscoveryScoreWeights `yaml:"score_weights"`
+}
+
+type DiscoveryScoreWeights struct {
+	KeywordRisk   DiscoveryKeywordRiskWeight   `yaml:"keyword_risk"`
+	Activity30D   DiscoveryActivityWeight      `yaml:"activity_30d"`
+	Similarity    DiscoverySimilarityWeight    `yaml:"similarity"`
+	DeletionTrace DiscoveryDeletionTraceWeight `yaml:"deletion_trace"`
+	AccountSize   DiscoveryAccountSizeWeight   `yaml:"account_size"`
+	Feedback      DiscoveryFeedbackWeight      `yaml:"feedback"`
+}
+
+type DiscoveryKeywordRiskWeight struct {
+	Max int `yaml:"max"`
+}
+
+type DiscoveryActivityWeight struct {
+	Low    int `yaml:"low"`
+	Medium int `yaml:"medium"`
+	High   int `yaml:"high"`
+}
+
+type DiscoverySimilarityWeight struct {
+	Weak   int `yaml:"weak"`
+	Medium int `yaml:"medium"`
+	Strong int `yaml:"strong"`
+}
+
+type DiscoveryDeletionTraceWeight struct {
+	Single int `yaml:"single"`
+	Max    int `yaml:"max"`
+}
+
+type DiscoveryAccountSizeWeight struct {
+	SmallBonus      int `yaml:"small_bonus"`
+	OversizePenalty int `yaml:"oversize_penalty"`
+}
+
+type DiscoveryFeedbackWeight struct {
+	IgnorePenalty int `yaml:"ignore_penalty"`
 }
 
 type LimitsConfig struct {
@@ -123,6 +176,42 @@ func Default() Config {
 			CheckInterval:   24 * time.Hour,
 			CleanupInterval: 24 * time.Hour,
 			CheckStableDays: 30,
+		},
+		Discovery: DiscoveryConfig{
+			Enabled:                   false,
+			Interval:                  24 * time.Hour,
+			MaxKeywordsPerRun:         20,
+			MaxPagesPerKeyword:        2,
+			MaxCandidatesPerRun:       100,
+			MaxRelatedPerCreator:      10,
+			AutoEnqueueFetchOnApprove: true,
+			ScoreVersion:              "v1",
+			ScoreWeights: DiscoveryScoreWeights{
+				KeywordRisk: DiscoveryKeywordRiskWeight{
+					Max: 40,
+				},
+				Activity30D: DiscoveryActivityWeight{
+					Low:    5,
+					Medium: 10,
+					High:   15,
+				},
+				Similarity: DiscoverySimilarityWeight{
+					Weak:   5,
+					Medium: 10,
+					Strong: 20,
+				},
+				DeletionTrace: DiscoveryDeletionTraceWeight{
+					Single: 10,
+					Max:    20,
+				},
+				AccountSize: DiscoveryAccountSizeWeight{
+					SmallBonus:      10,
+					OversizePenalty: -5,
+				},
+				Feedback: DiscoveryFeedbackWeight{
+					IgnorePenalty: -15,
+				},
+			},
 		},
 		Limits: LimitsConfig{
 			GlobalQPS:           2,
@@ -250,6 +339,60 @@ func applyDefaults(cfg *Config) {
 	if cfg.Scheduler.CheckStableDays == 0 {
 		cfg.Scheduler.CheckStableDays = 30
 	}
+	if cfg.Discovery.Interval == 0 {
+		cfg.Discovery.Interval = 24 * time.Hour
+	}
+	if cfg.Discovery.MaxKeywordsPerRun == 0 {
+		cfg.Discovery.MaxKeywordsPerRun = 20
+	}
+	if cfg.Discovery.MaxPagesPerKeyword == 0 {
+		cfg.Discovery.MaxPagesPerKeyword = 2
+	}
+	if cfg.Discovery.MaxCandidatesPerRun == 0 {
+		cfg.Discovery.MaxCandidatesPerRun = 100
+	}
+	if cfg.Discovery.MaxRelatedPerCreator == 0 {
+		cfg.Discovery.MaxRelatedPerCreator = 10
+	}
+	if cfg.Discovery.ScoreVersion == "" {
+		cfg.Discovery.ScoreVersion = "v1"
+	}
+	if cfg.Discovery.ScoreWeights.KeywordRisk.Max == 0 {
+		cfg.Discovery.ScoreWeights.KeywordRisk.Max = 40
+	}
+	if cfg.Discovery.ScoreWeights.Activity30D.Low == 0 {
+		cfg.Discovery.ScoreWeights.Activity30D.Low = 5
+	}
+	if cfg.Discovery.ScoreWeights.Activity30D.Medium == 0 {
+		cfg.Discovery.ScoreWeights.Activity30D.Medium = 10
+	}
+	if cfg.Discovery.ScoreWeights.Activity30D.High == 0 {
+		cfg.Discovery.ScoreWeights.Activity30D.High = 15
+	}
+	if cfg.Discovery.ScoreWeights.Similarity.Weak == 0 {
+		cfg.Discovery.ScoreWeights.Similarity.Weak = 5
+	}
+	if cfg.Discovery.ScoreWeights.Similarity.Medium == 0 {
+		cfg.Discovery.ScoreWeights.Similarity.Medium = 10
+	}
+	if cfg.Discovery.ScoreWeights.Similarity.Strong == 0 {
+		cfg.Discovery.ScoreWeights.Similarity.Strong = 20
+	}
+	if cfg.Discovery.ScoreWeights.DeletionTrace.Single == 0 {
+		cfg.Discovery.ScoreWeights.DeletionTrace.Single = 10
+	}
+	if cfg.Discovery.ScoreWeights.DeletionTrace.Max == 0 {
+		cfg.Discovery.ScoreWeights.DeletionTrace.Max = 20
+	}
+	if cfg.Discovery.ScoreWeights.AccountSize.SmallBonus == 0 {
+		cfg.Discovery.ScoreWeights.AccountSize.SmallBonus = 10
+	}
+	if cfg.Discovery.ScoreWeights.AccountSize.OversizePenalty == 0 {
+		cfg.Discovery.ScoreWeights.AccountSize.OversizePenalty = -5
+	}
+	if cfg.Discovery.ScoreWeights.Feedback.IgnorePenalty == 0 {
+		cfg.Discovery.ScoreWeights.Feedback.IgnorePenalty = -15
+	}
 	if cfg.Limits.DownloadConcurrency == 0 {
 		cfg.Limits.DownloadConcurrency = 4
 	}
@@ -321,6 +464,38 @@ func validate(cfg Config) error {
 	}
 	if cfg.Bilibili.FetchPageSize < 0 {
 		return errors.New("bilibili.fetch_page_size 必须大于 0")
+	}
+	if cfg.Discovery.Interval < 0 {
+		return errors.New("discovery.interval 不能小于 0")
+	}
+	if cfg.Discovery.MaxKeywordsPerRun < 0 {
+		return errors.New("discovery.max_keywords_per_run 不能小于 0")
+	}
+	if cfg.Discovery.MaxPagesPerKeyword < 0 {
+		return errors.New("discovery.max_pages_per_keyword 不能小于 0")
+	}
+	if cfg.Discovery.MaxCandidatesPerRun < 0 {
+		return errors.New("discovery.max_candidates_per_run 不能小于 0")
+	}
+	if cfg.Discovery.MaxRelatedPerCreator < 0 {
+		return errors.New("discovery.max_related_per_creator 不能小于 0")
+	}
+	if cfg.Discovery.Enabled {
+		if cfg.Discovery.Interval <= 0 {
+			return errors.New("discovery.interval 必须大于 0")
+		}
+		if cfg.Discovery.MaxKeywordsPerRun <= 0 {
+			return errors.New("discovery.max_keywords_per_run 必须大于 0")
+		}
+		if cfg.Discovery.MaxPagesPerKeyword <= 0 {
+			return errors.New("discovery.max_pages_per_keyword 必须大于 0")
+		}
+		if cfg.Discovery.MaxCandidatesPerRun <= 0 {
+			return errors.New("discovery.max_candidates_per_run 必须大于 0")
+		}
+		if len(cfg.Discovery.Keywords) == 0 {
+			return errors.New("discovery.keywords 至少配置 1 个关键词")
+		}
 	}
 	return nil
 }
