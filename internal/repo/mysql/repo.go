@@ -30,6 +30,10 @@ func (r *Repo) Jobs() repo.JobRepository {
 	return &jobRepo{db: r.db}
 }
 
+func (r *Repo) Candidates() repo.CandidateRepository {
+	return &candidateRepo{db: r.db}
+}
+
 type creatorRepo struct {
 	db *sql.DB
 }
@@ -43,5 +47,9 @@ type videoFileRepo struct {
 }
 
 type jobRepo struct {
+	db *sql.DB
+}
+
+type candidateRepo struct {
 	db *sql.DB
 }

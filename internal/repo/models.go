@@ -1,6 +1,9 @@
 package repo
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Creator struct {
 	ID            int64
@@ -94,4 +97,53 @@ type JobListFilter struct {
 type CleanupCandidateFilter struct {
 	Limit             int
 	IncludeOutOfPrint bool
+}
+
+type CandidateCreator struct {
+	ID               int64
+	Platform         string
+	UID              string
+	Name             string
+	AvatarURL        string
+	ProfileURL       string
+	FollowerCount    int64
+	Status           string
+	Score            int
+	ScoreVersion     string
+	LastDiscoveredAt time.Time
+	LastScoredAt     time.Time
+	ApprovedAt       time.Time
+	IgnoredAt        time.Time
+	BlockedAt        time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type CandidateCreatorSource struct {
+	ID                 int64
+	CandidateCreatorID int64
+	SourceType         string
+	SourceValue        string
+	SourceLabel        string
+	Weight             int
+	DetailJSON         json.RawMessage
+	CreatedAt          time.Time
+}
+
+type CandidateCreatorScoreDetail struct {
+	ID                 int64
+	CandidateCreatorID int64
+	FactorKey          string
+	FactorLabel        string
+	ScoreDelta         int
+	DetailJSON         json.RawMessage
+	CreatedAt          time.Time
+}
+
+type CandidateListFilter struct {
+	Status   string
+	MinScore int
+	Keyword  string
+	Page     int
+	PageSize int
 }

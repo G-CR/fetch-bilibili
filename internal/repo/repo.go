@@ -46,9 +46,22 @@ type JobRepository interface {
 	UpdateStatus(ctx context.Context, id int64, status string, errMsg string) error
 }
 
+type CandidateRepository interface {
+	Upsert(ctx context.Context, candidate CandidateCreator) (CandidateCreator, error)
+	FindByID(ctx context.Context, id int64) (CandidateCreator, error)
+	FindByPlatformUID(ctx context.Context, platform, uid string) (CandidateCreator, error)
+	List(ctx context.Context, filter CandidateListFilter) ([]CandidateCreator, int64, error)
+	ListSources(ctx context.Context, candidateID int64) ([]CandidateCreatorSource, error)
+	ListScoreDetails(ctx context.Context, candidateID int64) ([]CandidateCreatorScoreDetail, error)
+	ReplaceSources(ctx context.Context, candidateID int64, sources []CandidateCreatorSource) error
+	ReplaceScoreDetails(ctx context.Context, candidateID int64, details []CandidateCreatorScoreDetail) error
+	UpdateReviewStatus(ctx context.Context, id int64, from []string, to string, at time.Time) error
+}
+
 type Repositories struct {
 	Creators   CreatorRepository
 	Videos     VideoRepository
 	VideoFiles VideoFileRepository
 	Jobs       JobRepository
+	Candidates CandidateRepository
 }
