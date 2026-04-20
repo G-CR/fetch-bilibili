@@ -176,6 +176,34 @@ run_deploy() {
   )
 }
 
+run_deploy_with_path() {
+  local fixture="$1"
+  local path_value="$2"
+  shift 2
+  (
+    cd "$fixture/repo"
+    PATH="$path_value" TMP_LOG="$fixture/log" bash "$fixture/repo/scripts/deploy.sh" "$@"
+  )
+}
+
+remove_fixture_command() {
+  local fixture="$1"
+  local name="$2"
+  if [[ -f "$fixture/bin/$name" ]]; then
+    mv "$fixture/bin/$name" "$fixture/bin/$name.disabled"
+  fi
+}
+
+disable_fixture_fallbacks() {
+  local fixture="$1"
+  local script_path="$fixture/repo/scripts/deploy.sh"
+  local fake_go="$fixture/fallbacks/go"
+  local fake_npm="$fixture/fallbacks/npm"
+  mkdir -p "$fixture/fallbacks"
+
+  perl -0pi -e 's#/usr/local/go/bin/go#'"$fake_go"'#g; s#/usr/local/bin/npm#'"$fake_npm"'#g' "$script_path"
+}
+
 write_failing_verify_commands() {
   local fixture="$1"
 
@@ -301,6 +329,32 @@ smoke_deploy_healthcheck_retries_before_success() {
   fi
 }
 
+smoke_deploy_all_no_verify_without_go() {
+  local fixture="$1"
+  : >"$fixture/log"
+  disable_fixture_fallbacks "$fixture"
+  remove_fixture_command "$fixture" "go"
+
+  run_deploy_with_path "$fixture" "$fixture/bin:/usr/bin:/bin" --no-verify >/dev/null
+
+  assert_file_not_contains "$fixture/log" "go " "deploy-all --no-verify 缺少 go 时不应调用 go"
+  assert_file_contains "$fixture/log" "npm run build" "deploy-all --no-verify 缺少 go 时仍应执行前端构建"
+}
+
+smoke_deploy_app_no_verify_without_go_or_npm() {
+  local fixture="$1"
+  : >"$fixture/log"
+  disable_fixture_fallbacks "$fixture"
+  remove_fixture_command "$fixture" "go"
+  remove_fixture_command "$fixture" "npm"
+
+  run_deploy_with_path "$fixture" "$fixture/bin:/usr/bin:/bin" deploy-app --no-verify >/dev/null
+
+  assert_file_not_contains "$fixture/log" "go " "deploy-app --no-verify 缺少 go 时不应调用 go"
+  assert_file_not_contains "$fixture/log" "npm " "deploy-app --no-verify 缺少 npm 时不应调用 npm"
+  assert_file_contains "$fixture/log" "docker compose up -d --build app" "deploy-app --no-verify 缺少 go/npm 时仍应部署 app"
+}
+
 smoke_git_bash_compat_and_env_warning() {
   local fixture="$1"
   : >"$fixture/log"
@@ -324,8 +378,14 @@ main() {
   make_fixture "$TMP_DIR/no-verify"
   smoke_no_verify_skips_tests_but_not_build "$TMP_DIR/no-verify"
 
+  make_fixture "$TMP_DIR/no-verify-no-go"
+  smoke_deploy_all_no_verify_without_go "$TMP_DIR/no-verify-no-go"
+
   make_fixture "$TMP_DIR/deploy-app"
   smoke_deploy_app_without_frontend_build "$TMP_DIR/deploy-app"
+
+  make_fixture "$TMP_DIR/deploy-app-no-verify-no-build-tools"
+  smoke_deploy_app_no_verify_without_go_or_npm "$TMP_DIR/deploy-app-no-verify-no-build-tools"
 
   make_fixture "$TMP_DIR/restart-missing"
   smoke_restart_fails_when_container_missing "$TMP_DIR/restart-missing"

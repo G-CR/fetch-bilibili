@@ -70,8 +70,11 @@ resolve_runtime_commands() {
   CURL_CMD="$(resolve_cmd curl /usr/bin/curl /usr/local/bin/curl)" || fail "失败原因：未找到 curl 命令"
 }
 
-resolve_build_commands() {
+resolve_go_command() {
   GO_CMD="$(resolve_cmd go /usr/local/go/bin/go)" || fail "失败原因：未找到 go 命令"
+}
+
+resolve_npm_command() {
   NPM_CMD="$(resolve_cmd npm /usr/local/bin/npm)" || fail "失败原因：未找到 npm 命令"
 }
 
@@ -148,12 +151,14 @@ cmd_deploy_all() {
   log_step "检查部署环境"
   check_repo_files
   resolve_runtime_commands
-  resolve_build_commands
 
   if [[ $NO_VERIFY -eq 0 ]]; then
+    resolve_go_command
+    resolve_npm_command
     run_verify_backend
     run_verify_frontend
   else
+    resolve_npm_command
     log_step "跳过验证阶段 (--no-verify)"
   fi
 
@@ -173,9 +178,9 @@ cmd_deploy_app() {
   log_step "检查部署环境"
   check_repo_files
   resolve_runtime_commands
-  resolve_build_commands
 
   if [[ $NO_VERIFY -eq 0 ]]; then
+    resolve_go_command
     run_verify_backend
   else
     log_step "跳过后端验证 (--no-verify)"
