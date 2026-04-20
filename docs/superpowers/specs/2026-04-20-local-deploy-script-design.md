@@ -24,6 +24,9 @@
 - 提供少量明确的子命令，覆盖最常用的部署、重启和状态查看场景。
 - 输出全中文日志，便于快速判断当前处于哪一步、失败在哪一步。
 - 明确区分“重启现有容器”和“重建后重新部署”这两类行为，减少误解。
+- 第一版兼容：
+  - macOS / Linux Shell
+  - Windows + Docker Desktop + PowerShell
 
 ## 非目标
 
@@ -33,29 +36,47 @@
 - 第一版不自动执行 `git pull`、`git fetch`、分支切换或版本选择。
 - 第一版不自动安装缺失依赖（例如 `npm install`、`go install`）；只做依赖检查并给出明确提示。
 - 第一版不做复杂发布编排，例如灰度、回滚、多环境切换。
+- 第一版不承诺兼容 Git Bash、Cygwin 或 WSL，只保证原生 PowerShell 路径可用。
 
 ## 方案选择
 
-### 方案一：单个 Shell 脚本
+### 方案一：双入口脚本（推荐）
 
 核心思路：
 
 - 在仓库内新增 `scripts/deploy.sh`。
-- 脚本负责环境检查、测试、前端构建、Compose 构建拉起、健康检查和状态输出。
-- 用户统一通过一个入口执行，例如 `./scripts/deploy.sh`。
+- 同时新增 `scripts/deploy.ps1`。
+- 两个脚本共享同一套命令语义、参数和日志约定。
+- `deploy.sh` 覆盖 macOS / Linux，`deploy.ps1` 覆盖 Windows + PowerShell。
 
 优点：
 
-- 落地成本最低，最适合当前“本机自用 + Docker Compose”场景。
-- 对项目侵入小，不需要新增后端模块，也不需要改前端权限模型。
-- 对宿主机运维动作的表达最直接，适合串行编排。
+- 兼容当前明确需要的 Windows 原生 PowerShell 场景。
+- 仍然保持本地脚本的低成本优势，不需要新增后端模块，也不需要改前端权限模型。
+- 可以针对不同平台分别处理命令发现、路径和错误输出，减少跨平台兼容黑盒。
 
 缺点：
 
-- 随着参数增多，脚本复杂度会上升。
-- 可测试性和可复用性不如专门的 CLI 程序。
+- 需要维护两份入口脚本。
+- 两份脚本之间必须额外控制语义一致性。
 
-### 方案二：`Makefile` 为主入口
+### 方案二：单个 Shell 脚本
+
+核心思路：
+
+- 只保留 `scripts/deploy.sh`，Windows 用户自行通过 Git Bash / WSL 使用。
+
+优点：
+
+- 维护成本最低。
+- 当前 macOS / Linux 路径最直接。
+
+缺点：
+
+- 不满足“Windows + PowerShell 原生兼容”的明确需求。
+- 会把平台门槛转嫁给使用者。
+
+### 方案三：`Makefile` 为主入口
 
 核心思路：
 
@@ -69,10 +90,9 @@
 缺点：
 
 - 参数表达和错误处理能力较弱。
-- 中文交互和步骤日志不如 Shell 脚本自然。
-- 在不同 Shell / 平台上的兼容性边界更隐蔽。
+- 对 Windows 原生 PowerShell 不友好。
 
-### 方案三：Go 运维 CLI
+### 方案四：Go 运维 CLI
 
 核心思路：
 
@@ -90,12 +110,13 @@
 
 ## 最终决策
 
-采用方案一：新增 `scripts/deploy.sh` 作为统一入口。
+采用方案一：新增 `scripts/deploy.sh` 与 `scripts/deploy.ps1` 作为双入口、同语义实现。
 
 理由：
 
 - 当前需求边界非常明确：只服务本地开发机、只操作当前仓库、只控制本机 Docker Compose。
-- Shell 脚本已经足够覆盖“检查 -> 验证 -> 构建 -> 部署 -> 校验”的串行流程。
+- 脚本已经足够覆盖“检查 -> 验证 -> 构建 -> 部署 -> 校验”的串行流程。
+- 双入口可以直接满足 Windows + PowerShell 兼容要求，而不需要把用户逼到 Git Bash / WSL。
 - 与其把复杂度投入到新 CLI，不如先把日常最容易出错的手工命令收敛成一个稳定入口。
 
 `Makefile` 可以作为后续补充层，但不作为第一版主入口。
@@ -137,6 +158,12 @@
 ### 文件位置
 
 - 新增：`scripts/deploy.sh`
+- 新增：`scripts/deploy.ps1`
+
+要求：
+
+- 两个文件的命令集合、默认行为、参数名、中文日志语义保持一致。
+- 文档示例按平台分别给出，不要求用户自行做参数映射。
 
 ### 默认行为
 
@@ -152,6 +179,18 @@
 ./scripts/deploy.sh deploy-all
 ```
 
+Windows PowerShell 对应形式：
+
+```powershell
+.\scripts\deploy.ps1
+```
+
+等价于：
+
+```powershell
+.\scripts\deploy.ps1 deploy-all
+```
+
 带全局参数时也应保持这个语义，例如：
 
 ```bash
@@ -162,6 +201,12 @@
 
 ```bash
 ./scripts/deploy.sh deploy-all --no-verify
+```
+
+Windows PowerShell 对应形式：
+
+```powershell
+.\scripts\deploy.ps1 --no-verify
 ```
 
 ### 支持的子命令
@@ -233,6 +278,14 @@
 - 即使后端或前端当前不可访问，也应尽量输出已有信息，而不是过早失败。
 - 第一版展示的“镜像创建时间”只能近似反映本地构建时间，不能精确等价于“当前运行代码提交号”。
 
+### 跨平台语义要求
+
+- `deploy.sh` 与 `deploy.ps1` 支持相同的子命令与参数。
+- 默认行为一致：无子命令时都执行 `deploy-all`。
+- `--no-verify` 语义一致。
+- 中文日志主文案尽量保持一致，方便对照排障文档。
+- 平台差异只允许存在于命令调用方式、路径分隔符和本机命令发现逻辑。
+
 ### 支持的参数
 
 #### `--no-verify`
@@ -262,12 +315,21 @@
 - 是否存在 `docker-compose.yml`。
 - 是否存在 `configs/config.yaml`。
 - 是否能找到 `docker`、`go`、`npm`。
+- 在 Windows 下额外确认当前运行环境为 PowerShell，并给出 Docker Desktop 前置提示。
 
-考虑到当前项目在不同终端环境下可能存在 `PATH` 差异，脚本需要采用“`PATH` 优先 + 常见本机兜底路径”的方式寻找命令，例如：
+考虑到当前项目在不同终端环境下可能存在 `PATH` 差异，脚本需要采用“`PATH` 优先 + 常见本机兜底路径”的方式寻找命令。
+
+Unix 侧例如：
 
 - `docker`
 - `/usr/local/bin/docker`
 - `/Applications/Docker.app/Contents/Resources/bin/docker`
+
+Windows 侧例如：
+
+- `docker.exe`
+- `go.exe`
+- `npm.cmd`
 
 `go`、`npm` 也采用同类兜底策略，但第一版只覆盖当前项目已经实际遇到的常见本机路径，不追求任意平台全覆盖。
 
@@ -448,6 +510,12 @@ docker compose logs frontend --tail=200
 ./scripts/deploy.sh
 ```
 
+Windows 对应：
+
+```powershell
+.\scripts\deploy.ps1
+```
+
 预期：
 
 - 先跑后端测试和前端快速测试。
@@ -463,6 +531,12 @@ docker compose logs frontend --tail=200
 ./scripts/deploy.sh --no-verify
 ```
 
+Windows 对应：
+
+```powershell
+.\scripts\deploy.ps1 --no-verify
+```
+
 预期：
 
 - 不跑测试。
@@ -476,6 +550,12 @@ docker compose logs frontend --tail=200
 ./scripts/deploy.sh deploy-app
 ```
 
+Windows 对应：
+
+```powershell
+.\scripts\deploy.ps1 deploy-app
+```
+
 预期：
 
 - 不重新构建前端。
@@ -487,6 +567,12 @@ docker compose logs frontend --tail=200
 
 ```bash
 ./scripts/deploy.sh restart
+```
+
+Windows 对应：
+
+```powershell
+.\scripts\deploy.ps1 restart
 ```
 
 预期：
@@ -522,6 +608,7 @@ docker compose logs frontend --tail=200
 文档重点：
 
 - 新增一键部署脚本的使用说明
+- 分别给出 Unix Shell 与 PowerShell 的调用示例
 - 说明“保存配置触发重启”与“重新构建部署”之间的区别
 - 给出默认部署、后端单独部署、快速跳过验证部署的示例
 
