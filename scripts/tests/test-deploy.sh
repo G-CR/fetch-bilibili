@@ -113,6 +113,28 @@ set -euo pipefail
 
 echo "curl $*" >>"${TMP_LOG:?}"
 
+COUNT_FILE="${TMP_CURL_COUNT_FILE:-}"
+if [[ -n "$COUNT_FILE" ]]; then
+  current=0
+  if [[ -f "$COUNT_FILE" ]]; then
+    current="$(cat "$COUNT_FILE")"
+  fi
+  current=$((current + 1))
+  printf '%s\n' "$current" >"$COUNT_FILE"
+fi
+
+if [[ -n "${MOCK_CURL_FAIL_COUNT_FILE:-}" ]]; then
+  remaining=0
+  if [[ -f "$MOCK_CURL_FAIL_COUNT_FILE" ]]; then
+    remaining="$(cat "$MOCK_CURL_FAIL_COUNT_FILE")"
+  fi
+  if [[ "$remaining" -gt 0 ]]; then
+    remaining=$((remaining - 1))
+    printf '%s\n' "$remaining" >"$MOCK_CURL_FAIL_COUNT_FILE"
+    exit 22
+  fi
+fi
+
 if [[ "$*" == *"8080/healthz"* && "${MOCK_CURL_BACKEND_FAIL:-0}" == "1" ]]; then
   exit 22
 fi
@@ -152,6 +174,26 @@ run_deploy() {
     cd "$fixture/repo"
     PATH="$fixture/bin:$PATH" TMP_LOG="$fixture/log" bash "$fixture/repo/scripts/deploy.sh" "$@"
   )
+}
+
+write_failing_verify_commands() {
+  local fixture="$1"
+
+  cat > "$fixture/bin/go" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "unexpected go $*" >>"${TMP_LOG:?}"
+exit 99
+SCRIPT
+
+  cat > "$fixture/bin/npm" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "unexpected npm $*" >>"${TMP_LOG:?}"
+exit 99
+SCRIPT
+
+  chmod +x "$fixture/bin/go" "$fixture/bin/npm"
 }
 
 smoke_default_command_equals_deploy_all() {
@@ -209,10 +251,15 @@ smoke_status_prints_summary_on_health_failure() {
   local fixture="$1"
   : >"$fixture/log"
   local output
+  local code
   set +e
   output="$(MOCK_CURL_FAIL=1 run_deploy "$fixture" status 2>&1)"
+  code=$?
   set -e
 
+  if [[ $code -ne 0 ]]; then
+    fail "status 在健康检查失败时仍应返回 0"
+  fi
   assert_contains "$output" "状态摘要" "status 在健康检查失败时仍需输出摘要"
   assert_file_contains "$fixture/log" "docker compose ps" "status 应查询 compose 状态"
 }
@@ -223,6 +270,35 @@ smoke_healthcheck_calls_curl() {
   run_deploy "$fixture" deploy-app >/dev/null
 
   assert_file_contains "$fixture/log" "curl -sf http://127.0.0.1:8080/healthz" "后端健康检查应调用 curl"
+}
+
+smoke_restart_and_status_do_not_require_go_or_npm() {
+  local fixture="$1"
+  : >"$fixture/log"
+  write_failing_verify_commands "$fixture"
+
+  run_deploy "$fixture" restart >/dev/null
+  run_deploy "$fixture" status >/dev/null
+
+  assert_file_not_contains "$fixture/log" "unexpected go" "restart/status 不应调用 go"
+  assert_file_not_contains "$fixture/log" "unexpected npm" "restart/status 不应调用 npm"
+}
+
+smoke_deploy_healthcheck_retries_before_success() {
+  local fixture="$1"
+  : >"$fixture/log"
+  local count_file="$fixture/curl-count"
+  local fail_count_file="$fixture/curl-fail-count"
+  printf '2\n' >"$fail_count_file"
+
+  TMP_CURL_COUNT_FILE="$count_file" MOCK_CURL_FAIL_COUNT_FILE="$fail_count_file" run_deploy "$fixture" deploy-app >/dev/null
+
+  if [[ ! -f "$count_file" ]]; then
+    fail "健康检查重试测试未记录 curl 调用次数"
+  fi
+  if [[ "$(cat "$count_file")" -lt 3 ]]; then
+    fail "deploy-app 健康检查应在失败后重试"
+  fi
 }
 
 smoke_git_bash_compat_and_env_warning() {
@@ -242,14 +318,32 @@ main() {
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "$TMP_DIR"' EXIT
 
-  make_fixture "$TMP_DIR"
-  smoke_default_command_equals_deploy_all "$TMP_DIR"
-  smoke_no_verify_skips_tests_but_not_build "$TMP_DIR"
-  smoke_deploy_app_without_frontend_build "$TMP_DIR"
-  smoke_restart_fails_when_container_missing "$TMP_DIR"
-  smoke_status_prints_summary_on_health_failure "$TMP_DIR"
-  smoke_healthcheck_calls_curl "$TMP_DIR"
-  smoke_git_bash_compat_and_env_warning "$TMP_DIR"
+  make_fixture "$TMP_DIR/default"
+  smoke_default_command_equals_deploy_all "$TMP_DIR/default"
+
+  make_fixture "$TMP_DIR/no-verify"
+  smoke_no_verify_skips_tests_but_not_build "$TMP_DIR/no-verify"
+
+  make_fixture "$TMP_DIR/deploy-app"
+  smoke_deploy_app_without_frontend_build "$TMP_DIR/deploy-app"
+
+  make_fixture "$TMP_DIR/restart-missing"
+  smoke_restart_fails_when_container_missing "$TMP_DIR/restart-missing"
+
+  make_fixture "$TMP_DIR/status"
+  smoke_status_prints_summary_on_health_failure "$TMP_DIR/status"
+
+  make_fixture "$TMP_DIR/health-call"
+  smoke_healthcheck_calls_curl "$TMP_DIR/health-call"
+
+  make_fixture "$TMP_DIR/no-verify-deps"
+  smoke_restart_and_status_do_not_require_go_or_npm "$TMP_DIR/no-verify-deps"
+
+  make_fixture "$TMP_DIR/health-retry"
+  smoke_deploy_healthcheck_retries_before_success "$TMP_DIR/health-retry"
+
+  make_fixture "$TMP_DIR/git-bash"
+  smoke_git_bash_compat_and_env_warning "$TMP_DIR/git-bash"
 
   echo "deploy.sh smoke ok"
 }

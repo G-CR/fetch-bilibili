@@ -9,6 +9,8 @@ NPM_CMD=""
 NO_VERIFY=0
 CURRENT_CMD=""
 STEP_NO=0
+HEALTH_RETRY_ATTEMPTS="${HEALTH_RETRY_ATTEMPTS:-30}"
+HEALTH_RETRY_INTERVAL="${HEALTH_RETRY_INTERVAL:-1}"
 
 log_info() {
   echo "$*"
@@ -63,9 +65,12 @@ check_repo_files() {
   fi
 }
 
-resolve_commands() {
+resolve_runtime_commands() {
   DOCKER_CMD="$(resolve_cmd docker /usr/local/bin/docker /Applications/Docker.app/Contents/Resources/bin/docker)" || fail "失败原因：未找到 docker 命令"
   CURL_CMD="$(resolve_cmd curl /usr/bin/curl /usr/local/bin/curl)" || fail "失败原因：未找到 curl 命令"
+}
+
+resolve_build_commands() {
   GO_CMD="$(resolve_cmd go /usr/local/go/bin/go)" || fail "失败原因：未找到 go 命令"
   NPM_CMD="$(resolve_cmd npm /usr/local/bin/npm)" || fail "失败原因：未找到 npm 命令"
 }
@@ -95,18 +100,35 @@ run_build_frontend() {
   fi
 }
 
+wait_for_health() {
+  local url="$1"
+  local failure_message="$2"
+  local attempt=1
+
+  while [[ $attempt -le $HEALTH_RETRY_ATTEMPTS ]]; do
+    if "$CURL_CMD" -sf "$url" >/dev/null; then
+      return 0
+    fi
+
+    if [[ $attempt -eq $HEALTH_RETRY_ATTEMPTS ]]; then
+      fail "$failure_message"
+    fi
+
+    sleep "$HEALTH_RETRY_INTERVAL"
+    attempt=$((attempt + 1))
+  done
+
+  fail "$failure_message"
+}
+
 run_health_backend() {
   log_step "执行后端健康检查"
-  if ! "$CURL_CMD" -sf http://127.0.0.1:8080/healthz >/dev/null; then
-    fail "失败原因：后端健康检查失败，请执行 docker compose logs app --tail=200 排查"
-  fi
+  wait_for_health "http://127.0.0.1:8080/healthz" "失败原因：后端健康检查失败，请执行 docker compose logs app --tail=200 排查"
 }
 
 run_health_frontend() {
   log_step "执行前端健康检查"
-  if ! "$CURL_CMD" -sf http://127.0.0.1:5173 >/dev/null; then
-    fail "失败原因：前端健康检查失败，请执行 docker compose logs frontend --tail=200 排查"
-  fi
+  wait_for_health "http://127.0.0.1:5173" "失败原因：前端健康检查失败，请执行 docker compose logs frontend --tail=200 排查"
 }
 
 print_summary() {
@@ -125,7 +147,8 @@ print_summary() {
 cmd_deploy_all() {
   log_step "检查部署环境"
   check_repo_files
-  resolve_commands
+  resolve_runtime_commands
+  resolve_build_commands
 
   if [[ $NO_VERIFY -eq 0 ]]; then
     run_verify_backend
@@ -149,7 +172,8 @@ cmd_deploy_all() {
 cmd_deploy_app() {
   log_step "检查部署环境"
   check_repo_files
-  resolve_commands
+  resolve_runtime_commands
+  resolve_build_commands
 
   if [[ $NO_VERIFY -eq 0 ]]; then
     run_verify_backend
@@ -180,7 +204,7 @@ check_restart_containers() {
 cmd_restart() {
   log_step "检查部署环境"
   check_repo_files
-  resolve_commands
+  resolve_runtime_commands
   check_restart_containers
 
   log_step "重启 app 与 frontend 容器"
@@ -203,14 +227,16 @@ cmd_status() {
 
   log_step "检查部署环境"
   check_repo_files
-  resolve_commands
+  resolve_runtime_commands
 
-  if branch="$(cd "$REPO_ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null)"; then :; else branch="unknown"; fi
-  if commit="$(cd "$REPO_ROOT" && git rev-parse --short HEAD 2>/dev/null)"; then :; else commit="unknown"; fi
-  if [[ -z "$(cd "$REPO_ROOT" && git status --porcelain 2>/dev/null || true)" ]]; then
-    dirty="干净"
-  else
-    dirty="有改动"
+  if command -v git >/dev/null 2>&1; then
+    if branch="$(cd "$REPO_ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null)"; then :; else branch="unknown"; fi
+    if commit="$(cd "$REPO_ROOT" && git rev-parse --short HEAD 2>/dev/null)"; then :; else commit="unknown"; fi
+    if [[ -z "$(cd "$REPO_ROOT" && git status --porcelain 2>/dev/null || true)" ]]; then
+      dirty="干净"
+    else
+      dirty="有改动"
+    fi
   fi
 
   log_step "收集 Docker Compose 状态"
