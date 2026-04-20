@@ -27,6 +27,7 @@
 - 第一版兼容：
   - macOS / Linux Shell
   - Windows + Docker Desktop + PowerShell
+  - Windows + Docker Desktop + Git Bash
 
 ## 非目标
 
@@ -36,7 +37,7 @@
 - 第一版不自动执行 `git pull`、`git fetch`、分支切换或版本选择。
 - 第一版不自动安装缺失依赖（例如 `npm install`、`go install`）；只做依赖检查并给出明确提示。
 - 第一版不做复杂发布编排，例如灰度、回滚、多环境切换。
-- 第一版不承诺兼容 Git Bash、Cygwin 或 WSL，只保证原生 PowerShell 路径可用。
+- 第一版不承诺兼容 `cmd.exe`、Cygwin 或 WSL。
 
 ## 方案选择
 
@@ -47,11 +48,12 @@
 - 在仓库内新增 `scripts/deploy.sh`。
 - 同时新增 `scripts/deploy.ps1`。
 - 两个脚本共享同一套命令语义、参数和日志约定。
-- `deploy.sh` 覆盖 macOS / Linux，`deploy.ps1` 覆盖 Windows + PowerShell。
+- `deploy.sh` 覆盖 macOS / Linux，以及 Windows 下的 Git Bash。
+- `deploy.ps1` 覆盖 Windows + PowerShell。
 
 优点：
 
-- 兼容当前明确需要的 Windows 原生 PowerShell 场景。
+- 同时兼容 Windows 上最常见的两类 VS Code 终端：PowerShell 与 Git Bash。
 - 仍然保持本地脚本的低成本优势，不需要新增后端模块，也不需要改前端权限模型。
 - 可以针对不同平台分别处理命令发现、路径和错误输出，减少跨平台兼容黑盒。
 
@@ -116,7 +118,7 @@
 
 - 当前需求边界非常明确：只服务本地开发机、只操作当前仓库、只控制本机 Docker Compose。
 - 脚本已经足够覆盖“检查 -> 验证 -> 构建 -> 部署 -> 校验”的串行流程。
-- 双入口可以直接满足 Windows + PowerShell 兼容要求，而不需要把用户逼到 Git Bash / WSL。
+- 双入口可以同时满足 Windows + PowerShell 与 Windows + Git Bash 的使用习惯。
 - 与其把复杂度投入到新 CLI，不如先把日常最容易出错的手工命令收敛成一个稳定入口。
 
 `Makefile` 可以作为后续补充层，但不作为第一版主入口。
@@ -164,6 +166,7 @@
 
 - 两个文件的命令集合、默认行为、参数名、中文日志语义保持一致。
 - 文档示例按平台分别给出，不要求用户自行做参数映射。
+- `deploy.sh` 在 Windows Git Bash 下应作为正式支持入口，而不是“可能可用”的旁路。
 
 ### 默认行为
 
@@ -191,6 +194,12 @@ Windows PowerShell 对应形式：
 .\scripts\deploy.ps1 deploy-all
 ```
 
+Windows Git Bash 对应形式：
+
+```bash
+./scripts/deploy.sh
+```
+
 带全局参数时也应保持这个语义，例如：
 
 ```bash
@@ -207,6 +216,12 @@ Windows PowerShell 对应形式：
 
 ```powershell
 .\scripts\deploy.ps1 --no-verify
+```
+
+Windows Git Bash 对应形式仍为：
+
+```bash
+./scripts/deploy.sh --no-verify
 ```
 
 ### 支持的子命令
@@ -285,6 +300,7 @@ Windows PowerShell 对应形式：
 - `--no-verify` 语义一致。
 - 中文日志主文案尽量保持一致，方便对照排障文档。
 - 平台差异只允许存在于命令调用方式、路径分隔符和本机命令发现逻辑。
+- `deploy.sh` 需要同时兼顾 Unix Shell 与 Windows Git Bash，不允许依赖纯 Linux 独占语法或 GNU-only 行为作为硬前提。
 
 ### 支持的参数
 
@@ -315,7 +331,10 @@ Windows PowerShell 对应形式：
 - 是否存在 `docker-compose.yml`。
 - 是否存在 `configs/config.yaml`。
 - 是否能找到 `docker`、`go`、`npm`。
-- 在 Windows 下额外确认当前运行环境为 PowerShell，并给出 Docker Desktop 前置提示。
+- 在 Windows 下根据入口分别确认当前运行环境：
+  - `deploy.ps1`：PowerShell
+  - `deploy.sh`：Git Bash
+- 在 Windows 下额外给出 Docker Desktop 前置提示。
 
 考虑到当前项目在不同终端环境下可能存在 `PATH` 差异，脚本需要采用“`PATH` 优先 + 常见本机兜底路径”的方式寻找命令。
 
@@ -332,6 +351,11 @@ Windows 侧例如：
 - `npm.cmd`
 
 `go`、`npm` 也采用同类兜底策略，但第一版只覆盖当前项目已经实际遇到的常见本机路径，不追求任意平台全覆盖。
+
+其中：
+
+- `deploy.ps1` 负责处理 PowerShell 下的命令发现与调用细节。
+- `deploy.sh` 负责处理 Unix Shell / Git Bash 下的命令发现与调用细节。
 
 `.env` 在当前仓库中属于推荐项而不是硬前置项，因为 `docker-compose.yml` 已为镜像变量提供默认值。脚本处理策略为：
 
@@ -516,6 +540,12 @@ Windows 对应：
 .\scripts\deploy.ps1
 ```
 
+Windows Git Bash 对应：
+
+```bash
+./scripts/deploy.sh
+```
+
 预期：
 
 - 先跑后端测试和前端快速测试。
@@ -537,6 +567,12 @@ Windows 对应：
 .\scripts\deploy.ps1 --no-verify
 ```
 
+Windows Git Bash 对应：
+
+```bash
+./scripts/deploy.sh --no-verify
+```
+
 预期：
 
 - 不跑测试。
@@ -556,6 +592,12 @@ Windows 对应：
 .\scripts\deploy.ps1 deploy-app
 ```
 
+Windows Git Bash 对应：
+
+```bash
+./scripts/deploy.sh deploy-app
+```
+
 预期：
 
 - 不重新构建前端。
@@ -573,6 +615,12 @@ Windows 对应：
 
 ```powershell
 .\scripts\deploy.ps1 restart
+```
+
+Windows Git Bash 对应：
+
+```bash
+./scripts/deploy.sh restart
 ```
 
 预期：
@@ -608,7 +656,7 @@ Windows 对应：
 文档重点：
 
 - 新增一键部署脚本的使用说明
-- 分别给出 Unix Shell 与 PowerShell 的调用示例
+- 分别给出 Unix Shell、Windows Git Bash 与 PowerShell 的调用示例
 - 说明“保存配置触发重启”与“重新构建部署”之间的区别
 - 给出默认部署、后端单独部署、快速跳过验证部署的示例
 
