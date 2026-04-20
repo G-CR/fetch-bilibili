@@ -12,6 +12,20 @@ export function createDefaultState() {
     creators: [],
     videos: [],
     jobs: [],
+    candidatePool: {
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+      lastSyncAt: "未同步",
+      filters: {
+        status: "",
+        minScore: 0,
+        keyword: ""
+      },
+      selectedID: 0,
+      detail: null
+    },
     logs: [
       makeLog("前端已切换为后端接口模式"),
       makeLog("等待首次同步")
@@ -96,6 +110,22 @@ export function loadState() {
       creators: isLegacyLocalMode ? defaults.creators : Array.isArray(parsed?.creators) ? parsed.creators : defaults.creators,
       videos: isLegacyLocalMode ? defaults.videos : Array.isArray(parsed?.videos) ? parsed.videos : defaults.videos,
       jobs: isLegacyLocalMode ? defaults.jobs : Array.isArray(parsed?.jobs) ? parsed.jobs : defaults.jobs,
+      candidatePool: {
+        ...defaults.candidatePool,
+        ...(parsed?.candidatePool || {}),
+        items:
+          isLegacyLocalMode || !Array.isArray(parsed?.candidatePool?.items)
+            ? defaults.candidatePool.items
+            : parsed.candidatePool.items,
+        filters: {
+          ...defaults.candidatePool.filters,
+          ...(parsed?.candidatePool?.filters || {})
+        },
+        detail:
+          parsed?.candidatePool?.detail && typeof parsed.candidatePool.detail === "object"
+            ? parsed.candidatePool.detail
+            : defaults.candidatePool.detail
+      },
       logs: isLegacyLocalMode ? defaults.logs : Array.isArray(parsed?.logs) ? parsed.logs : defaults.logs,
       storage: {
         ...defaults.storage,
@@ -292,6 +322,89 @@ export function applySystemStatusSnapshot(previous, payload) {
   };
 }
 
+export function applyCandidateListSnapshot(previous, payload, lastSyncAt = formatNow()) {
+  const safePrevious = previous || createDefaultState();
+  const items = normalizeCandidateItems(payload?.items);
+  const selectedID = numberOr(safePrevious?.candidatePool?.selectedID, 0);
+  const currentDetail = safePrevious?.candidatePool?.detail;
+  const selectedFromList = items.find((item) => item.id === selectedID) || null;
+  const nextDetail =
+    currentDetail?.candidate?.id === selectedID && selectedFromList
+      ? {
+          ...currentDetail,
+          candidate: {
+            ...currentDetail.candidate,
+            ...selectedFromList
+          }
+        }
+      : currentDetail;
+
+  return {
+    ...safePrevious,
+    candidatePool: {
+      ...safePrevious.candidatePool,
+      items,
+      total: numberOr(payload?.total, items.length),
+      page: numberOr(payload?.page, safePrevious?.candidatePool?.page, 1),
+      pageSize: numberOr(payload?.page_size, safePrevious?.candidatePool?.pageSize, 20),
+      lastSyncAt,
+      detail: nextDetail
+    }
+  };
+}
+
+export function applyCandidateDetailSnapshot(previous, payload) {
+  const safePrevious = previous || createDefaultState();
+  const candidate = normalizeCandidateCore(payload?.candidate);
+  if (!candidate.id) {
+    return safePrevious;
+  }
+
+  const sources = normalizeCandidateSources(payload?.sources);
+  const scoreDetails = normalizeCandidateScoreDetails(payload?.score_details);
+  const nextItem = {
+    ...candidate,
+    sources
+  };
+
+  return {
+    ...safePrevious,
+    candidatePool: {
+      ...safePrevious.candidatePool,
+      items: mergeEntityByID(safePrevious?.candidatePool?.items, nextItem, {}, createEmptyCandidate),
+      selectedID: candidate.id,
+      detail: {
+        candidate,
+        sources,
+        scoreDetails
+      }
+    }
+  };
+}
+
+export function applyCandidateReviewAction(previous, candidateID, nextStatus, actedAt = new Date().toISOString()) {
+  const safePrevious = previous || createDefaultState();
+  const nextItems = (Array.isArray(safePrevious?.candidatePool?.items) ? safePrevious.candidatePool.items : []).map((item) =>
+    item?.id === candidateID ? applyCandidateStatusPatch(item, nextStatus, actedAt) : item
+  );
+  const nextDetail =
+    safePrevious?.candidatePool?.detail?.candidate?.id === candidateID
+      ? {
+          ...safePrevious.candidatePool.detail,
+          candidate: applyCandidateStatusPatch(safePrevious.candidatePool.detail.candidate, nextStatus, actedAt)
+        }
+      : safePrevious?.candidatePool?.detail || null;
+
+  return {
+    ...safePrevious,
+    candidatePool: {
+      ...safePrevious.candidatePool,
+      items: nextItems,
+      detail: nextDetail
+    }
+  };
+}
+
 export function deriveMetrics(state) {
   const creators = Array.isArray(state?.creators) ? state.creators : [];
   const videos = Array.isArray(state?.videos) ? state.videos : [];
@@ -311,6 +424,42 @@ export function deriveMetrics(state) {
       videos.filter((video) => video.state === "OUT_OF_PRINT").length
     ),
     storagePercent: preciseStoragePercent
+  };
+}
+
+export function deriveCandidateInsights(state, now = new Date()) {
+  const items = Array.isArray(state?.candidatePool?.items) ? state.candidatePool.items : [];
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  const scoreBands = {
+    high: 0,
+    medium: 0,
+    low: 0
+  };
+
+  items.forEach((item) => {
+    const score = numberOr(item?.score, 0);
+    if (score >= 80) {
+      scoreBands.high += 1;
+    } else if (score >= 60) {
+      scoreBands.medium += 1;
+    } else {
+      scoreBands.low += 1;
+    }
+  });
+
+  return {
+    totalCount: items.length,
+    reviewingCount: items.filter((item) => item?.status === "reviewing").length,
+    highPriorityCount: items.filter((item) => item?.status === "reviewing" && numberOr(item?.score, 0) >= 80).length,
+    discoveredTodayCount: items.filter((item) => isDateWithinRange(item?.lastDiscoveredAt, start, end)).length,
+    ignoredCount: items.filter((item) => item?.status === "ignored").length,
+    approvedCount: items.filter((item) => item?.status === "approved").length,
+    blockedCount: items.filter((item) => item?.status === "blocked").length,
+    scoreBands
   };
 }
 
@@ -380,6 +529,111 @@ function normalizeCreators(items) {
     platform: stringOr(item?.platform, "bilibili"),
     status: stringOr(item?.status, "active")
   }));
+}
+
+function normalizeCandidateItems(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items.map((item) => ({
+    ...normalizeCandidateCore(item),
+    sources: normalizeCandidateSources(item?.sources)
+  }));
+}
+
+function normalizeCandidateCore(item) {
+  if (!item || typeof item !== "object") {
+    return createEmptyCandidate(0);
+  }
+  return {
+    id: numberOr(item?.id, 0),
+    platform: stringOr(item?.platform, "bilibili"),
+    uid: stringOr(item?.uid, ""),
+    name: stringOr(item?.name, ""),
+    avatarUrl: stringOr(item?.avatar_url, item?.avatarUrl, ""),
+    profileUrl: stringOr(item?.profile_url, item?.profileUrl, ""),
+    followerCount: numberOr(item?.follower_count, item?.followerCount, 0),
+    status: stringOr(item?.status, "reviewing"),
+    score: numberOr(item?.score, 0),
+    scoreVersion: stringOr(item?.score_version, item?.scoreVersion, ""),
+    lastDiscoveredAt: stringOr(item?.last_discovered_at, item?.lastDiscoveredAt, ""),
+    lastScoredAt: stringOr(item?.last_scored_at, item?.lastScoredAt, ""),
+    approvedAt: stringOr(item?.approved_at, item?.approvedAt, ""),
+    ignoredAt: stringOr(item?.ignored_at, item?.ignoredAt, ""),
+    blockedAt: stringOr(item?.blocked_at, item?.blockedAt, ""),
+    createdAt: stringOr(item?.created_at, item?.createdAt, ""),
+    updatedAt: stringOr(item?.updated_at, item?.updatedAt, "")
+  };
+}
+
+function normalizeCandidateSources(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items.map((item) => ({
+    id: numberOr(item?.id, 0),
+    sourceType: stringOr(item?.source_type, item?.sourceType, ""),
+    sourceValue: stringOr(item?.source_value, item?.sourceValue, ""),
+    sourceLabel: stringOr(item?.source_label, item?.sourceLabel, ""),
+    weight: numberOr(item?.weight, 0),
+    detail: normalizeCandidateSourceDetail(item?.detail_json ?? item?.detail),
+    createdAt: stringOr(item?.created_at, item?.createdAt, "")
+  }));
+}
+
+function normalizeCandidateScoreDetails(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items.map((item) => ({
+    id: numberOr(item?.id, 0),
+    factorKey: stringOr(item?.factor_key, item?.factorKey, ""),
+    factorLabel: stringOr(item?.factor_label, item?.factorLabel, ""),
+    scoreDelta: numberOr(item?.score_delta, item?.scoreDelta, 0),
+    detail: normalizeStructuredDetail(item?.detail_json ?? item?.detail),
+    createdAt: stringOr(item?.created_at, item?.createdAt, "")
+  }));
+}
+
+function normalizeCandidateSourceDetail(detail) {
+  const normalized = normalizeStructuredDetail(detail);
+  if (!normalized || typeof normalized !== "object" || Array.isArray(normalized)) {
+    return {};
+  }
+  const next = { ...normalized };
+  if (Array.isArray(normalized.videos)) {
+    next.videos = normalized.videos.map((item) => normalizeCandidateVideoHit(item));
+  }
+  return next;
+}
+
+function normalizeCandidateVideoHit(item) {
+  if (!item || typeof item !== "object") {
+    return {
+      uid: "",
+      creatorName: "",
+      videoId: "",
+      title: "",
+      description: "",
+      publishTime: "",
+      duration: 0,
+      coverUrl: "",
+      viewCount: 0,
+      favoriteCount: 0
+    };
+  }
+  return {
+    uid: stringOr(item?.uid, item?.UID, ""),
+    creatorName: stringOr(item?.creator_name, item?.CreatorName, ""),
+    videoId: stringOr(item?.video_id, item?.VideoID, ""),
+    title: stringOr(item?.title, item?.Title, ""),
+    description: stringOr(item?.description, item?.Description, ""),
+    publishTime: stringOr(item?.publish_time, item?.PublishTime, ""),
+    duration: numberOr(item?.duration, item?.Duration, 0),
+    coverUrl: stringOr(item?.cover_url, item?.CoverURL, ""),
+    viewCount: numberOr(item?.view_count, item?.ViewCount, 0),
+    favoriteCount: numberOr(item?.favorite_count, item?.FavoriteCount, 0)
+  };
 }
 
 function normalizeJobs(items) {
@@ -667,6 +921,29 @@ function createEmptyVideo(id) {
   };
 }
 
+function createEmptyCandidate(id) {
+  return {
+    id: numberOr(id, 0),
+    platform: "bilibili",
+    uid: "",
+    name: "",
+    avatarUrl: "",
+    profileUrl: "",
+    followerCount: 0,
+    status: "reviewing",
+    score: 0,
+    scoreVersion: "",
+    lastDiscoveredAt: "",
+    lastScoredAt: "",
+    approvedAt: "",
+    ignoredAt: "",
+    blockedAt: "",
+    createdAt: "",
+    updatedAt: "",
+    sources: []
+  };
+}
+
 function normalizeCreatorPatch(item) {
   if (!item || typeof item !== "object") {
     return null;
@@ -777,6 +1054,47 @@ function normalizeVideoPatch(item) {
     patch.lastCheckAt = String(item.last_check_at || "");
   }
   return patch;
+}
+
+function applyCandidateStatusPatch(candidate, nextStatus, actedAt) {
+  const status = String(nextStatus || "").trim() || candidate?.status || "reviewing";
+  return {
+    ...candidate,
+    status,
+    approvedAt: status === "approved" ? actedAt : status === "reviewing" ? "" : candidate?.approvedAt || "",
+    ignoredAt: status === "ignored" ? actedAt : status === "reviewing" ? "" : candidate?.ignoredAt || "",
+    blockedAt: status === "blocked" ? actedAt : candidate?.blockedAt || "",
+    updatedAt: actedAt || candidate?.updatedAt || ""
+  };
+}
+
+function normalizeStructuredDetail(value) {
+  if (value == null) {
+    return {};
+  }
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch (_error) {
+      return {
+        raw: value
+      };
+    }
+  }
+  if (typeof value === "object") {
+    return value;
+  }
+  return {
+    raw: String(value)
+  };
+}
+
+function isDateWithinRange(value, start, end) {
+  const timestamp = Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp)) {
+    return false;
+  }
+  return timestamp >= start.getTime() && timestamp < end.getTime();
 }
 
 function numberOr(...values) {

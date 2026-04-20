@@ -1,20 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  approveCandidateCreator,
+  blockCandidateCreator,
   createDashboardEventStream,
   createCreator,
   deleteCreator,
   enqueueJob,
   formatRequestError,
+  getCandidateCreator,
   getSystemStatus,
   getSystemConfig,
+  ignoreCandidateCreator,
+  listCandidateCreators,
   loadDashboardSnapshot,
   patchCreator,
+  reviewCandidateCreator,
+  triggerCandidateDiscover,
   updateSystemConfig
 } from "./lib/api";
 import {
+  applyCandidateDetailSnapshot,
+  applyCandidateListSnapshot,
+  applyCandidateReviewAction,
   applyLiveEvent,
   applyRemoteSnapshot,
   applySystemStatusSnapshot,
+  deriveCandidateInsights,
   deriveCleanupPreview,
   deriveMetrics,
   deriveTaskDiagnostics,
@@ -26,6 +37,7 @@ import {
 const sections = [
   { id: "overview", label: "总览" },
   { id: "creators", label: "博主" },
+  { id: "candidates", label: "候选池" },
   { id: "tasks", label: "任务" },
   { id: "storage", label: "存储" },
   { id: "risk", label: "风控" },
@@ -72,16 +84,31 @@ function isVersionedRequestCurrent(requestVersionRef, stateVersionRef, requestMe
   );
 }
 
+function beginRequest(requestVersionRef) {
+  const requestVersion = requestVersionRef.current + 1;
+  requestVersionRef.current = requestVersion;
+  return requestVersion;
+}
+
+function isRequestCurrent(requestVersionRef, requestVersion) {
+  return requestVersionRef.current === requestVersion;
+}
+
 function App() {
   const [state, setState] = useState(() => loadState());
   const hasStreamOpenedRef = useRef(false);
   const authoritativeStateVersionRef = useRef(0);
   const snapshotRequestVersionRef = useRef(0);
   const systemRequestVersionRef = useRef(0);
+  const candidateRequestVersionRef = useRef(0);
+  const candidateDetailRequestVersionRef = useRef(0);
+  const candidateFiltersRef = useRef(state.candidatePool?.filters || { status: "", minScore: 0, keyword: "" });
   const [activeSection, setActiveSection] = useState("overview");
   const [selectedJobId, setSelectedJobId] = useState(null);
   const [toast, setToast] = useState("");
   const [busyAction, setBusyAction] = useState("");
+  const [candidateLoading, setCandidateLoading] = useState(false);
+  const [candidateDetailLoading, setCandidateDetailLoading] = useState(false);
   const [form, setForm] = useState({
     uid: "",
     name: "",
@@ -105,12 +132,23 @@ function App() {
     detail: "保存配置时会展示 YAML 与业务配置校验结果。"
   }));
   const metrics = useMemo(() => deriveMetrics(state), [state]);
+  const candidateInsights = useMemo(() => deriveCandidateInsights(state), [state]);
   const taskDiagnostics = useMemo(() => deriveTaskDiagnostics(state), [state]);
   const cleanupPreview = useMemo(() => deriveCleanupPreview(state, 5), [state]);
   const configDiffPreview = useMemo(
     () => deriveConfigDiffPreview(savedConfigText, configText),
     [savedConfigText, configText]
   );
+  const candidateFilters = state.candidatePool?.filters || { status: "", minScore: 0, keyword: "" };
+  const candidateItems = Array.isArray(state.candidatePool?.items) ? state.candidatePool.items : [];
+  const selectedCandidateID = Number(state.candidatePool?.selectedID) || 0;
+  const selectedCandidate = useMemo(() => {
+    const detailCandidate = state.candidatePool?.detail?.candidate;
+    if (detailCandidate?.id === selectedCandidateID) {
+      return detailCandidate;
+    }
+    return candidateItems.find((item) => item.id === selectedCandidateID) || null;
+  }, [candidateItems, selectedCandidateID, state.candidatePool?.detail]);
   const selectedJob = useMemo(() => {
     const jobs = Array.isArray(state.jobs) ? state.jobs : [];
     return jobs.find((job) => job.id === selectedJobId) || jobs[0] || null;
@@ -119,6 +157,10 @@ function App() {
   useEffect(() => {
     saveState(state);
   }, [state]);
+
+  useEffect(() => {
+    candidateFiltersRef.current = state.candidatePool?.filters || { status: "", minScore: 0, keyword: "" };
+  }, [state.candidatePool?.filters]);
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -153,7 +195,10 @@ function App() {
     updateState((previous) => applyLiveEvent(previous, { type: "stream.connecting", data: {} }));
 
     const boot = async () => {
-      await syncDashboardFromAPI({ silent: true, withLog: false });
+      await Promise.allSettled([
+        syncDashboardFromAPI({ silent: true, withLog: false }),
+        syncCandidatePool({ silent: true, withLog: false })
+      ]);
       if (disposed) {
         return;
       }
@@ -163,7 +208,10 @@ function App() {
           hasStreamOpenedRef.current = true;
           updateState((previous) => applyLiveEvent(previous, { type: "stream.live", data: {} }));
           if (wasOpened) {
-            void syncDashboardFromAPI({ silent: true, withLog: false });
+            void Promise.allSettled([
+              syncDashboardFromAPI({ silent: true, withLog: false }),
+              syncCandidatePool({ silent: true, withLog: false })
+            ]);
           }
         },
         onError: (error) => {
@@ -187,7 +235,10 @@ function App() {
         void syncSystemStatus({ silent: true });
       }, SYSTEM_RECONCILE_INTERVAL_MS);
       snapshotTimer = window.setInterval(() => {
-        void syncDashboardFromAPI({ silent: true, withLog: false });
+        void Promise.allSettled([
+          syncDashboardFromAPI({ silent: true, withLog: false }),
+          syncCandidatePool({ silent: true, withLog: false })
+        ]);
       }, SNAPSHOT_RECONCILE_INTERVAL_MS);
     };
 
@@ -316,6 +367,23 @@ function App() {
     showToast.timer = window.setTimeout(() => setToast(""), 2200);
   }
 
+  async function syncAllData({ silent = false } = {}) {
+    const [dashboardResult, candidateResult] = await Promise.allSettled([
+      syncDashboardFromAPI({ silent, withLog: !silent }),
+      syncCandidatePool({ silent, withLog: false })
+    ]);
+
+    if (candidateResult.status === "rejected") {
+      const message = formatRequestError(candidateResult.reason);
+      pushLog(`刷新候选池失败: ${message}`);
+      if (!silent) {
+        showToast(message);
+      }
+    }
+
+    return dashboardResult;
+  }
+
   async function syncDashboardFromAPI({ silent = false, withLog = !silent } = {}) {
     const requestMeta = beginVersionedRequest(snapshotRequestVersionRef, authoritativeStateVersionRef);
     if (!silent) {
@@ -362,6 +430,95 @@ function App() {
     }
   }
 
+  async function syncCandidatePool({ silent = false, withLog = !silent, filters = candidateFiltersRef.current } = {}) {
+    const requestVersion = beginRequest(candidateRequestVersionRef);
+    if (!silent) {
+      setCandidateLoading(true);
+    }
+    try {
+      const appliedFilters = {
+        status: String(filters?.status || ""),
+        minScore: Number(filters?.minScore) || 0,
+        keyword: String(filters?.keyword || "")
+      };
+      const payload = await listCandidateCreators(state.apiBase, {
+        page: 1,
+        page_size: 100,
+        status: appliedFilters.status,
+        min_score: appliedFilters.minScore,
+        keyword: appliedFilters.keyword
+      });
+      if (!isRequestCurrent(candidateRequestVersionRef, requestVersion)) {
+        return;
+      }
+
+      const syncAt = nowLabel();
+      updateState((previous) => ({
+        ...applyCandidateListSnapshot(
+          {
+            ...previous,
+            candidatePool: {
+              ...previous.candidatePool,
+              filters: appliedFilters
+            }
+          },
+          payload,
+          syncAt
+        ),
+        logs: withLog
+          ? [makeLog(`已同步候选池: ${payload.items.length} 个候选 / 总数 ${payload.total}`), ...(previous.logs || [])].slice(0, 18)
+          : previous.logs || []
+      }));
+    } catch (error) {
+      const message = formatRequestError(error);
+      if (withLog) {
+        pushLog(`刷新候选池失败: ${message}`);
+      }
+      if (!silent) {
+        throw error;
+      }
+    } finally {
+      if (!silent) {
+        setCandidateLoading(false);
+      }
+    }
+  }
+
+  async function loadCandidateDetail(id, { silent = false } = {}) {
+    const candidateID = Number(id) || 0;
+    if (candidateID <= 0) {
+      return;
+    }
+    const requestVersion = beginRequest(candidateDetailRequestVersionRef);
+    updateState((previous) => ({
+      ...previous,
+      candidatePool: {
+        ...previous.candidatePool,
+        selectedID: candidateID
+      }
+    }));
+    if (!silent) {
+      setCandidateDetailLoading(true);
+    }
+    try {
+      const payload = await getCandidateCreator(state.apiBase, candidateID);
+      if (!isRequestCurrent(candidateDetailRequestVersionRef, requestVersion)) {
+        return;
+      }
+      updateState((previous) => applyCandidateDetailSnapshot(previous, payload));
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`加载候选详情失败: ${message}`);
+      if (!silent) {
+        showToast(message);
+      }
+    } finally {
+      if (!silent) {
+        setCandidateDetailLoading(false);
+      }
+    }
+  }
+
   async function syncSystemStatus({ silent = false } = {}) {
     try {
       const requestMeta = beginVersionedRequest(systemRequestVersionRef, authoritativeStateVersionRef);
@@ -393,6 +550,18 @@ function App() {
       ...applyRemoteSnapshot(previous, snapshot, syncAt),
       logs: [makeLog(successMessage), ...(previous.logs || [])].slice(0, 18)
     }));
+  }
+
+  async function refreshCandidateAfterMutation(successMessage, { includeDashboard = false, detailID = selectedCandidateID } = {}) {
+    await syncCandidatePool({ silent: true, withLog: false });
+    if (detailID > 0) {
+      await loadCandidateDetail(detailID, { silent: true });
+    }
+    if (includeDashboard) {
+      await refreshAfterMutation(successMessage);
+      return;
+    }
+    pushLog(successMessage);
   }
 
   async function loadSystemConfig({ silent = false, preserveValidation = false } = {}) {
@@ -580,6 +749,115 @@ function App() {
     }
   }
 
+  function updateCandidateFilters(patch) {
+    updateState((previous) => ({
+      ...previous,
+      candidatePool: {
+        ...previous.candidatePool,
+        filters: {
+          ...(previous.candidatePool?.filters || {}),
+          ...patch
+        }
+      }
+    }));
+  }
+
+  async function handleCandidateFilterSubmit(event) {
+    event.preventDefault();
+    try {
+      await syncCandidatePool({ filters: candidateFilters, silent: false });
+      showToast("候选池已刷新");
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`候选筛选失败: ${message}`);
+      showToast(message);
+    }
+  }
+
+  async function openCandidateDrawer(id) {
+    await loadCandidateDetail(id);
+  }
+
+  function closeCandidateDrawer() {
+    setCandidateDetailLoading(false);
+    updateState((previous) => ({
+      ...previous,
+      candidatePool: {
+        ...previous.candidatePool,
+        selectedID: 0,
+        detail: null
+      }
+    }));
+  }
+
+  async function handleCandidateDiscover() {
+    setBusyAction("candidate-discover");
+    try {
+      await triggerCandidateDiscover(state.apiBase);
+      await syncCandidatePool({ silent: true, withLog: false });
+      await refreshAfterMutation("已触发候选发现任务");
+      showToast("候选发现已入队");
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`触发候选发现失败: ${message}`);
+      showToast(message);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function handleCandidateDecision(id, action) {
+    const actionKey = `candidate-${action}-${id}`;
+    setBusyAction(actionKey);
+    try {
+      if (action === "approve") {
+        await approveCandidateCreator(state.apiBase, id);
+        updateState((previous) => applyCandidateReviewAction(previous, id, "approved"));
+        await refreshCandidateAfterMutation(`候选已加入正式追踪: #${id}`, { includeDashboard: true, detailID: id });
+        showToast("已加入追踪");
+        return;
+      }
+
+      const actionMap = {
+        ignore: {
+          request: ignoreCandidateCreator,
+          status: "ignored",
+          success: "候选已忽略",
+          toast: "已忽略"
+        },
+        block: {
+          request: blockCandidateCreator,
+          status: "blocked",
+          success: "候选已拉黑",
+          toast: "已拉黑"
+        },
+        review: {
+          request: reviewCandidateCreator,
+          status: "reviewing",
+          success: "候选已恢复审核",
+          toast: "已恢复审核"
+        }
+      };
+
+      const current = actionMap[action];
+      if (!current) {
+        showToast("候选动作不存在");
+        return;
+      }
+
+      await current.request(state.apiBase, id);
+      updateState((previous) => applyCandidateReviewAction(previous, id, current.status));
+      await refreshCandidateAfterMutation(`${current.success}: #${id}`, { detailID: id });
+      showToast(current.toast);
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`候选操作失败: ${message}`);
+      showToast(message);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   const storagePercent = `${metrics.storagePercent}%`;
   const healthLabel = healthText(state.system.health);
   const connectionLabel = connectionText(state.connection?.status);
@@ -590,6 +868,8 @@ function App() {
   const cleanupPressureBytes = Math.max(0, Number(state.storage.usedBytes || 0) - Number(state.storage.safeBytes || 0));
   const configDirty = configText !== savedConfigText;
   const configRestarting = configRestartState.active;
+  const candidateDrawerOpen = selectedCandidateID > 0;
+  const candidateDrawerDetail = state.candidatePool?.detail;
 
   return (
     <div className="shell">
@@ -655,7 +935,7 @@ function App() {
               type="button"
               className="secondary-button"
               data-testid="sync-button"
-              onClick={() => void syncDashboardFromAPI()}
+              onClick={() => void syncAllData()}
               disabled={busyAction === "sync"}
             >
               {busyAction === "sync" ? "同步中..." : "同步数据"}
@@ -821,6 +1101,122 @@ function App() {
                   </span>
                 </div>
               ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="candidates" className="section surface surface--highlight candidate-surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">种子池</p>
+              <h3>候选池与人工审核</h3>
+              <p className="panel-note">用于查看发现链路产出的候选博主、评分拆解与人工审核状态。</p>
+            </div>
+            <div className="command-actions">
+              <span className="pill pill--soft">候选同步: {state.candidatePool?.lastSyncAt || "未同步"}</span>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void syncCandidatePool({ silent: false })}
+                disabled={candidateLoading}
+              >
+                {candidateLoading ? "刷新中..." : "刷新候选"}
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => void handleCandidateDiscover()}
+                disabled={busyAction === "candidate-discover"}
+              >
+                {busyAction === "candidate-discover" ? "发现中..." : "手动发现"}
+              </button>
+            </div>
+          </div>
+
+          <div className="metric-grid metric-grid--candidates">
+            <MetricCard label="新候选数" value={candidateInsights.reviewingCount} detail="当前待人工审核" />
+            <MetricCard label="高优候选数" value={candidateInsights.highPriorityCount} detail="评分 >= 80 且仍在审核中" />
+            <MetricCard label="今日发现数" value={candidateInsights.discoveredTodayCount} detail="按最近发现时间统计" />
+            <MetricCard label="已忽略数" value={candidateInsights.ignoredCount} detail="已人工筛除，仍保留在候选池" />
+          </div>
+
+          <div className="panel panel--span" style={{ marginTop: 18 }}>
+            <div className="panel-header">
+              <div>
+                <p className="section-kicker">筛选与审核</p>
+                <h3>候选筛选与审核队列</h3>
+              </div>
+              <span className="pill pill--soft">总数 {state.candidatePool?.total || 0}</span>
+            </div>
+
+            <form className="candidate-filters" onSubmit={handleCandidateFilterSubmit}>
+              <label>
+                状态
+                <select
+                  value={candidateFilters.status}
+                  onChange={(event) => updateCandidateFilters({ status: event.target.value })}
+                >
+                  <option value="">全部</option>
+                  <option value="reviewing">审核中</option>
+                  <option value="ignored">已忽略</option>
+                  <option value="approved">已批准</option>
+                  <option value="blocked">已拉黑</option>
+                </select>
+              </label>
+              <label>
+                最低分
+                <select
+                  value={candidateFilters.minScore}
+                  onChange={(event) => updateCandidateFilters({ minScore: Number(event.target.value) || 0 })}
+                >
+                  <option value="0">不限</option>
+                  <option value="60">60 分</option>
+                  <option value="80">80 分</option>
+                  <option value="90">90 分</option>
+                </select>
+              </label>
+              <label className="candidate-filters__keyword">
+                关键词
+                <input
+                  aria-label="候选关键词筛选"
+                  value={candidateFilters.keyword}
+                  onChange={(event) => updateCandidateFilters({ keyword: event.target.value })}
+                  placeholder="名称 / UID / 来源标签"
+                />
+              </label>
+              <button
+                type="submit"
+                className="secondary-button"
+                data-testid="candidate-filter-submit"
+                disabled={candidateLoading}
+              >
+                {candidateLoading ? "查询中..." : "筛选候选"}
+              </button>
+            </form>
+
+            <div className="candidate-band-strip">
+              <DetailStat label="高分" value={candidateInsights.scoreBands.high} tone="success" />
+              <DetailStat label="中分" value={candidateInsights.scoreBands.medium} />
+              <DetailStat label="低分" value={candidateInsights.scoreBands.low} tone="danger" />
+            </div>
+
+            <div className="candidate-list" data-testid="candidate-list">
+              {candidateItems.length > 0 ? (
+                candidateItems.map((candidate) => (
+                  <CandidateRow
+                    key={`candidate-${candidate.id}`}
+                    candidate={candidate}
+                    busyAction={busyAction}
+                    onView={() => void openCandidateDrawer(candidate.id)}
+                    onApprove={() => void handleCandidateDecision(candidate.id, "approve")}
+                    onIgnore={() => void handleCandidateDecision(candidate.id, "ignore")}
+                    onBlock={() => void handleCandidateDecision(candidate.id, "block")}
+                    onReview={() => void handleCandidateDecision(candidate.id, "review")}
+                  />
+                ))
+              ) : (
+                <p className="panel-note">当前没有候选，请先触发一次发现任务，或调整筛选条件。</p>
+              )}
             </div>
           </div>
         </section>
@@ -1226,6 +1622,139 @@ function App() {
             </div>
           </div>
         </section>
+
+        <div
+          className={candidateDrawerOpen ? "candidate-drawer candidate-drawer--open" : "candidate-drawer"}
+          data-testid="candidate-drawer"
+        >
+          <button
+            type="button"
+            className="candidate-drawer__backdrop"
+            onClick={closeCandidateDrawer}
+            aria-label="关闭候选详情抽屉"
+          />
+          <aside className="candidate-drawer__panel">
+            <div className="panel-header">
+              <div>
+                <p className="section-kicker">候选详情</p>
+                <h3>{selectedCandidate ? selectedCandidate.name || selectedCandidate.uid : "选择候选查看来源与评分拆解"}</h3>
+              </div>
+              <button type="button" className="ghost-link" onClick={closeCandidateDrawer}>
+                关闭
+              </button>
+            </div>
+
+            {selectedCandidate ? (
+              <>
+                <div className="detail-grid candidate-detail-grid">
+                  <DetailItem label="UID" value={selectedCandidate.uid || "-"} />
+                  <DetailItem label="平台" value={selectedCandidate.platform || "bilibili"} />
+                  <DetailItem label="粉丝量" value={formatCount(selectedCandidate.followerCount)} />
+                  <DetailItem label="当前分数" value={`${selectedCandidate.score || 0} 分`} />
+                  <DetailItem label="审核状态" value={reviewStatusText(selectedCandidate.status)} />
+                  <DetailItem label="最近发现" value={formatDateTime(selectedCandidate.lastDiscoveredAt)} />
+                </div>
+
+                <div className="action-row candidate-drawer__actions">
+                  {selectedCandidate.status === "reviewing" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => void handleCandidateDecision(selectedCandidate.id, "approve")}
+                        disabled={busyAction === `candidate-approve-${selectedCandidate.id}`}
+                      >
+                        加入追踪
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => void handleCandidateDecision(selectedCandidate.id, "ignore")}
+                        disabled={busyAction === `candidate-ignore-${selectedCandidate.id}`}
+                      >
+                        忽略
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => void handleCandidateDecision(selectedCandidate.id, "block")}
+                        disabled={busyAction === `candidate-block-${selectedCandidate.id}`}
+                      >
+                        拉黑
+                      </button>
+                    </>
+                  ) : null}
+
+                  {selectedCandidate.status === "ignored" ? (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => void handleCandidateDecision(selectedCandidate.id, "review")}
+                      disabled={busyAction === `candidate-review-${selectedCandidate.id}`}
+                    >
+                      恢复审核
+                    </button>
+                  ) : null}
+                </div>
+
+                {selectedCandidate.profileUrl ? (
+                  <a className="candidate-link" href={selectedCandidate.profileUrl} target="_blank" rel="noreferrer">
+                    打开博主主页
+                  </a>
+                ) : null}
+
+                <div className="detail-block">
+                  <div className="panel-header">
+                    <div>
+                      <p className="section-kicker">来源</p>
+                      <h3>来源列表</h3>
+                    </div>
+                    <span className="pill pill--soft">
+                      {(candidateDrawerDetail?.sources || selectedCandidate.sources || []).length} 条
+                    </span>
+                  </div>
+                  <div className="candidate-source-list">
+                    {(candidateDrawerDetail?.sources || selectedCandidate.sources || []).length > 0 ? (
+                      (candidateDrawerDetail?.sources || selectedCandidate.sources || []).map((source) => (
+                        <CandidateSourceCard key={`source-${source.id}-${source.sourceValue}`} source={source} />
+                      ))
+                    ) : (
+                      <p className="panel-note">暂无来源明细</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="detail-block">
+                  <div className="panel-header">
+                    <div>
+                      <p className="section-kicker">评分</p>
+                      <h3>评分拆解</h3>
+                    </div>
+                    <span className="pill pill--soft">
+                      {(candidateDrawerDetail?.scoreDetails || []).length} 项
+                    </span>
+                  </div>
+                  {candidateDetailLoading && !(candidateDrawerDetail?.scoreDetails || []).length ? (
+                    <p className="panel-note">正在加载候选详情...</p>
+                  ) : (candidateDrawerDetail?.scoreDetails || []).length > 0 ? (
+                    <div className="candidate-score-list">
+                      {candidateDrawerDetail.scoreDetails.map((detail) => (
+                        <CandidateScoreDetailCard key={`score-${detail.id}-${detail.factorKey}`} detail={detail} />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="panel-note">暂无评分拆解</p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="candidate-drawer__empty">
+                <p>选择候选查看来源与评分拆解</p>
+                <p className="panel-note">详情抽屉会展示命中来源、公开视频摘要与评分因子，便于人工决策。</p>
+              </div>
+            )}
+          </aside>
+        </div>
       </main>
 
       <div className={toast ? "toast toast--visible" : "toast"}>{toast}</div>
@@ -1320,6 +1849,164 @@ function VideoStateBadge({ state }) {
   return <span className={`status-badge status-badge--${videoStateTone(state)}`}>{videoStateText(state)}</span>;
 }
 
+function CandidateRow({ candidate, busyAction, onView, onApprove, onIgnore, onBlock, onReview }) {
+  const score = Number(candidate?.score) || 0;
+  const sourceLabels = Array.isArray(candidate?.sources)
+    ? candidate.sources
+        .slice(0, 3)
+        .map((source) => source?.sourceLabel || source?.sourceValue || "")
+        .filter(Boolean)
+    : [];
+
+  return (
+    <div className="candidate-row" data-testid={`candidate-row-${candidate.id}`}>
+      <div className="candidate-row__main">
+        <div className="candidate-row__title">
+          <span>{candidate.name || candidate.uid || `候选 #${candidate.id}`}</span>
+          <span className="candidate-row__uid">UID {candidate.uid || "-"}</span>
+        </div>
+        <div className="candidate-row__meta">
+          粉丝 {formatCount(candidate.followerCount)} · 最近发现 {formatDateTime(candidate.lastDiscoveredAt)}
+        </div>
+        {sourceLabels.length > 0 ? (
+          <div className="candidate-chip-list">
+            {sourceLabels.map((label) => (
+              <span className="candidate-chip" key={`${candidate.id}-${label}`}>
+                {label}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="candidate-row__status">
+        <span className={`score-chip score-chip--${candidateScoreTone(score)}`}>{score} 分</span>
+        <span className={`status-badge status-badge--${reviewStatusTone(candidate.status)}`}>{reviewStatusText(candidate.status)}</span>
+      </div>
+
+      <div className="row-actions candidate-row__actions">
+        {candidate.status === "reviewing" ? (
+          <>
+            <button
+              type="button"
+              className="ghost-link"
+              onClick={onApprove}
+              disabled={busyAction === `candidate-approve-${candidate.id}`}
+            >
+              加入追踪
+            </button>
+            <button
+              type="button"
+              className="ghost-link"
+              onClick={onIgnore}
+              disabled={busyAction === `candidate-ignore-${candidate.id}`}
+            >
+              忽略
+            </button>
+            <button
+              type="button"
+              className="ghost-link"
+              onClick={onBlock}
+              disabled={busyAction === `candidate-block-${candidate.id}`}
+            >
+              拉黑
+            </button>
+          </>
+        ) : null}
+
+        {candidate.status === "ignored" ? (
+          <>
+            <button
+              type="button"
+              className="ghost-link"
+              onClick={onReview}
+              disabled={busyAction === `candidate-review-${candidate.id}`}
+            >
+              恢复审核
+            </button>
+            <button
+              type="button"
+              className="ghost-link"
+              onClick={onBlock}
+              disabled={busyAction === `candidate-block-${candidate.id}`}
+            >
+              拉黑
+            </button>
+          </>
+        ) : null}
+
+        <button type="button" className="ghost-link" onClick={onView}>
+          查看详情
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CandidateSourceCard({ source }) {
+  const videos = Array.isArray(source?.detail?.videos) ? source.detail.videos : [];
+  return (
+    <div className="candidate-source-card">
+      <div className="candidate-source-card__header">
+        <div>
+          <div className="row-title">{source.sourceLabel || source.sourceValue || source.sourceType || "未知来源"}</div>
+          <div className="row-meta">权重 {source.weight || 0} · 记录于 {formatDateTime(source.createdAt)}</div>
+        </div>
+        <span className="pill pill--soft">{source.sourceType || "source"}</span>
+      </div>
+      {videos.length > 0 ? (
+        <div className="candidate-video-list">
+          {videos.map((video) => (
+            <div className="candidate-video-row" key={`${source.id}-${video.videoId || video.title}`}>
+              <div>
+                <div className="row-title">{video.title || video.videoId || "未命名视频"}</div>
+                <div className="row-meta">
+                  {video.videoId || "-"} · 发布于 {formatDateTime(video.publishTime)}
+                </div>
+              </div>
+              <div className="candidate-video-side">
+                <span>播放 {formatCount(video.viewCount)}</span>
+                <span>收藏 {formatCount(video.favoriteCount)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="panel-note">该来源暂无公开视频摘要。</p>
+      )}
+    </div>
+  );
+}
+
+function CandidateScoreDetailCard({ detail }) {
+  const detailEntries = detail?.detail && typeof detail.detail === "object" ? Object.entries(detail.detail) : [];
+  return (
+    <div className="candidate-score-card">
+      <div className="candidate-score-card__header">
+        <div>
+          <div className="row-title">{detail.factorLabel || detail.factorKey || "未命名因子"}</div>
+          <div className="row-meta">{detail.factorKey || "-"}</div>
+        </div>
+        <span className={`score-chip score-chip--${detail.scoreDelta >= 80 ? "high" : detail.scoreDelta > 0 ? "medium" : "low"}`}>
+          {detail.scoreDelta > 0 ? `+${detail.scoreDelta}` : detail.scoreDelta}
+        </span>
+      </div>
+      {detailEntries.length > 0 ? (
+        <div className="payload-list candidate-score-card__details">
+          {detailEntries.map(([key, value]) => (
+            <div className="payload-row" key={`${detail.id}-${key}`}>
+              <span className="payload-key">{key}</span>
+              <span className="payload-value">{formatPayloadValue(value)}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="panel-note">暂无评分附加信息。</p>
+      )}
+    </div>
+  );
+}
+
 function statusText(status) {
   switch (status) {
     case "queued":
@@ -1348,6 +2035,46 @@ function statusTone(status) {
     default:
       return "queued";
   }
+}
+
+function reviewStatusText(status) {
+  switch (status) {
+    case "reviewing":
+      return "审核中";
+    case "ignored":
+      return "已忽略";
+    case "approved":
+      return "已批准";
+    case "blocked":
+      return "已拉黑";
+    default:
+      return status || "未知";
+  }
+}
+
+function reviewStatusTone(status) {
+  switch (status) {
+    case "reviewing":
+      return "running";
+    case "ignored":
+      return "queued";
+    case "approved":
+      return "success";
+    case "blocked":
+      return "failed";
+    default:
+      return "queued";
+  }
+}
+
+function candidateScoreTone(score) {
+  if (score >= 80) {
+    return "high";
+  }
+  if (score >= 60) {
+    return "medium";
+  }
+  return "low";
 }
 
 function videoStateText(state) {
@@ -1500,6 +2227,8 @@ function jobText(type) {
   switch (type) {
     case "fetch":
       return "拉取最新视频";
+    case "discover":
+      return "发现候选博主";
     case "check":
       return "检查视频状态";
     case "cleanup":

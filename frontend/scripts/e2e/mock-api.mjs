@@ -85,6 +85,122 @@ scheduler:
         last_check_at: "2026-04-13T11:00:00Z"
       }
     ],
+    candidates: [
+      {
+        candidate: {
+          id: 301,
+          platform: "bilibili",
+          uid: "9001",
+          name: "候选补档站",
+          avatar_url: "",
+          profile_url: "https://space.bilibili.com/9001",
+          follower_count: 321000,
+          status: "reviewing",
+          score: 88,
+          score_version: "v1",
+          last_discovered_at: "2026-04-13T09:30:00+08:00",
+          last_scored_at: "2026-04-13T09:35:00+08:00",
+          approved_at: "",
+          ignored_at: "",
+          blocked_at: "",
+          created_at: "2026-04-13T09:36:00+08:00",
+          updated_at: "2026-04-13T09:36:00+08:00"
+        },
+        sources: [
+          {
+            id: 1,
+            source_type: "keyword",
+            source_value: "补档",
+            source_label: "关键词：补档",
+            weight: 15,
+            detail_json: {
+              keyword: "补档",
+              videos: [
+                {
+                  UID: "9001",
+                  CreatorName: "候选补档站",
+                  VideoID: "BV1seed301",
+                  Title: "补档测试视频",
+                  PublishTime: "2026-04-13T08:00:00+08:00",
+                  ViewCount: 4200,
+                  FavoriteCount: 320
+                }
+              ]
+            },
+            created_at: "2026-04-13T09:36:00+08:00"
+          }
+        ],
+        score_details: [
+          {
+            id: 11,
+            factor_key: "keyword_risk",
+            factor_label: "命中高风险关键词",
+            score_delta: 30,
+            detail_json: {
+              keywords: ["补档", "未删减"]
+            },
+            created_at: "2026-04-13T09:35:00+08:00"
+          },
+          {
+            id: 12,
+            factor_key: "activity_30d",
+            factor_label: "最近 30 天更新活跃",
+            score_delta: 18,
+            detail_json: {
+              video_count: 6
+            },
+            created_at: "2026-04-13T09:35:00+08:00"
+          }
+        ]
+      },
+      {
+        candidate: {
+          id: 302,
+          platform: "bilibili",
+          uid: "9002",
+          name: "观察名单",
+          avatar_url: "",
+          profile_url: "https://space.bilibili.com/9002",
+          follower_count: 98000,
+          status: "ignored",
+          score: 64,
+          score_version: "v1",
+          last_discovered_at: "2026-04-12T12:00:00+08:00",
+          last_scored_at: "2026-04-12T12:05:00+08:00",
+          approved_at: "",
+          ignored_at: "2026-04-13T10:00:00+08:00",
+          blocked_at: "",
+          created_at: "2026-04-12T12:06:00+08:00",
+          updated_at: "2026-04-13T10:00:00+08:00"
+        },
+        sources: [
+          {
+            id: 2,
+            source_type: "keyword",
+            source_value: "切片",
+            source_label: "关键词：切片",
+            weight: 12,
+            detail_json: {
+              keyword: "切片",
+              videos: []
+            },
+            created_at: "2026-04-12T12:06:00+08:00"
+          }
+        ],
+        score_details: [
+          {
+            id: 13,
+            factor_key: "feedback",
+            factor_label: "人工反馈惩罚",
+            score_delta: -6,
+            detail_json: {
+              ignore_count: 1
+            },
+            created_at: "2026-04-13T10:00:00+08:00"
+          }
+        ]
+      }
+    ],
     system: {
       health: "online",
       mysql_ok: true,
@@ -258,6 +374,89 @@ function recalcJobCounters() {
   state.system.overview.pending_jobs = pendingJobs;
 }
 
+function recalcCreatorCounters() {
+  state.system.overview.active_creators = state.creators.filter((item) => item.status === "active").length;
+}
+
+function broadcastCreatorOverview() {
+  recalcCreatorCounters();
+  broadcastEvent("system.changed", {
+    system: {
+      overview: {
+        active_creators: state.system.overview.active_creators
+      }
+    }
+  });
+}
+
+function enqueueMockJob(type, payload = {}) {
+  const now = new Date().toISOString();
+  const job = {
+    id: nextID(state.jobs),
+    type: String(type || "fetch"),
+    status: "queued",
+    payload: {
+      origin: "mock_api",
+      ...payload
+    },
+    created_at: now,
+    updated_at: now
+  };
+  state.jobs.unshift(job);
+  recalcJobCounters();
+  state.system.last_job_at = now;
+  broadcastEvent("job.changed", { job });
+  broadcastEvent("system.changed", {
+    system: {
+      active_jobs: state.system.active_jobs,
+      last_job_at: state.system.last_job_at,
+      overview: {
+        pending_jobs: state.system.overview.pending_jobs
+      }
+    }
+  });
+  scheduleJobLifecycle(job.id);
+  return job;
+}
+
+function listCandidateItems() {
+  return state.candidates.map((item) => ({
+    ...item.candidate,
+    sources: item.sources
+  }));
+}
+
+function findCandidateRecord(id) {
+  return state.candidates.find((item) => item?.candidate?.id === id) || null;
+}
+
+function applyCandidateStatus(candidate, status) {
+  const now = new Date().toISOString();
+  return {
+    ...candidate,
+    status,
+    approved_at: status === "approved" ? now : status === "reviewing" ? "" : candidate.approved_at || "",
+    ignored_at: status === "ignored" ? now : status === "reviewing" ? "" : candidate.ignored_at || "",
+    blocked_at: status === "blocked" ? now : candidate.blocked_at || "",
+    updated_at: now
+  };
+}
+
+function updateCandidateStatus(id, status) {
+  let nextRecord = null;
+  state.candidates = state.candidates.map((record) => {
+    if (record?.candidate?.id !== id) {
+      return record;
+    }
+    nextRecord = {
+      ...record,
+      candidate: applyCandidateStatus(record.candidate, status)
+    };
+    return nextRecord;
+  });
+  return nextRecord;
+}
+
 function buildJobEventPayload(job, patch) {
   const payload = {
     id: job.id
@@ -426,6 +625,167 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && req.url.startsWith("/candidate-creators")) {
+      const url = new URL(req.url, "http://127.0.0.1");
+      const path = url.pathname;
+
+      if (path === "/candidate-creators") {
+        const status = String(url.searchParams.get("status") || "").trim();
+        const keyword = String(url.searchParams.get("keyword") || "").trim();
+        const minScore = Number(url.searchParams.get("min_score") || 0);
+        const page = Math.max(Number(url.searchParams.get("page") || 1), 1);
+        const pageSize = Math.max(Number(url.searchParams.get("page_size") || 20), 1);
+
+        const filtered = listCandidateItems().filter((item) => {
+          if (status && item.status !== status) {
+            return false;
+          }
+          if (minScore > 0 && Number(item.score || 0) < minScore) {
+            return false;
+          }
+          if (!keyword) {
+            return true;
+          }
+          const sourceLabels = Array.isArray(item.sources) ? item.sources.map((source) => source.source_label || "").join(" ") : "";
+          const haystack = `${item.name || ""} ${item.uid || ""} ${sourceLabels}`;
+          return haystack.includes(keyword);
+        });
+
+        const total = filtered.length;
+        const startIndex = (page - 1) * pageSize;
+        const items = filtered.slice(startIndex, startIndex + pageSize);
+
+        sendJSON(res, 200, {
+          items,
+          total,
+          page,
+          page_size: pageSize
+        });
+        return;
+      }
+
+      const match = path.match(/^\/candidate-creators\/(\d+)$/);
+      if (match) {
+        const record = findCandidateRecord(Number(match[1]));
+        if (!record) {
+          sendJSON(res, 404, { error: "候选不存在" });
+          return;
+        }
+        sendJSON(res, 200, record);
+        return;
+      }
+    }
+
+    if (req.method === "POST" && req.url === "/candidate-creators/discover") {
+      enqueueMockJob("discover", { scope: "candidate_discover" });
+
+      if (!findCandidateRecord(303)) {
+        state.candidates.unshift({
+          candidate: {
+            id: 303,
+            platform: "bilibili",
+            uid: "9003",
+            name: "新发现候选",
+            avatar_url: "",
+            profile_url: "https://space.bilibili.com/9003",
+            follower_count: 156000,
+            status: "reviewing",
+            score: 82,
+            score_version: "v1",
+            last_discovered_at: new Date().toISOString(),
+            last_scored_at: new Date().toISOString(),
+            approved_at: "",
+            ignored_at: "",
+            blocked_at: "",
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          },
+          sources: [
+            {
+              id: 3,
+              source_type: "keyword",
+              source_value: "重传",
+              source_label: "关键词：重传",
+              weight: 15,
+              detail_json: {
+                keyword: "重传",
+                videos: [
+                  {
+                    UID: "9003",
+                    CreatorName: "新发现候选",
+                    VideoID: "BV1seed303",
+                    Title: "重传样本视频",
+                    PublishTime: new Date().toISOString(),
+                    ViewCount: 1800,
+                    FavoriteCount: 140
+                  }
+                ]
+              },
+              created_at: new Date().toISOString()
+            }
+          ],
+          score_details: [
+            {
+              id: 14,
+              factor_key: "keyword_risk",
+              factor_label: "命中高风险关键词",
+              score_delta: 24,
+              detail_json: {
+                keywords: ["重传"]
+              },
+              created_at: new Date().toISOString()
+            }
+          ]
+        });
+      }
+
+      sendJSON(res, 200, { status: "queued", type: "discover" });
+      return;
+    }
+
+    if (req.method === "POST" && req.url.startsWith("/candidate-creators/")) {
+      const url = new URL(req.url, "http://127.0.0.1");
+      const match = url.pathname.match(/^\/candidate-creators\/(\d+)\/(approve|ignore|block|review)$/);
+      if (match) {
+        const id = Number(match[1]);
+        const action = match[2];
+        const record = findCandidateRecord(id);
+        if (!record) {
+          sendJSON(res, 404, { error: "候选不存在" });
+          return;
+        }
+
+        if (action === "approve") {
+          const updated = updateCandidateStatus(id, "approved");
+          let creator = state.creators.find((item) => item.uid === updated?.candidate?.uid) || null;
+          if (!creator) {
+            creator = {
+              id: nextID(state.creators),
+              uid: updated?.candidate?.uid || "",
+              name: updated?.candidate?.name || "",
+              platform: updated?.candidate?.platform || "bilibili",
+              status: "active"
+            };
+            state.creators.unshift(creator);
+            broadcastEvent("creator.changed", { creator });
+            broadcastCreatorOverview();
+          }
+          enqueueMockJob("fetch", { creator_id: creator.id, source: "candidate_approve" });
+          sendJSON(res, 200, creator);
+          return;
+        }
+
+        const nextStatus = action === "ignore" ? "ignored" : action === "block" ? "blocked" : "reviewing";
+        updateCandidateStatus(id, nextStatus);
+        sendJSON(res, 200, {
+          status: "ok",
+          action,
+          candidate_id: id
+        });
+        return;
+      }
+    }
+
     if (req.method === "GET" && req.url.startsWith("/creators")) {
       sendJSON(res, 200, { items: state.creators });
       return;
@@ -441,15 +801,9 @@ const server = http.createServer(async (req, res) => {
         status: String(payload.status || "active")
       };
       state.creators.unshift(creator);
-      state.system.overview.active_creators = state.creators.filter((item) => item.status === "active").length;
+      recalcCreatorCounters();
       broadcastEvent("creator.changed", { creator });
-      broadcastEvent("system.changed", {
-        system: {
-          overview: {
-            active_creators: state.system.overview.active_creators
-          }
-        }
-      });
+      broadcastCreatorOverview();
       sendJSON(res, 200, creator);
       return;
     }
@@ -473,16 +827,10 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, 404, { error: "not found" });
         return;
       }
-      state.system.overview.active_creators = state.creators.filter((item) => item.status === "active").length;
+      recalcCreatorCounters();
       const creator = state.creators.find((item) => item.id === id);
       broadcastEvent("creator.changed", { creator });
-      broadcastEvent("system.changed", {
-        system: {
-          overview: {
-            active_creators: state.system.overview.active_creators
-          }
-        }
-      });
+      broadcastCreatorOverview();
       sendJSON(res, 200, creator);
       return;
     }
@@ -494,29 +842,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/jobs") {
       const payload = await readBody(req);
-      const now = new Date().toISOString();
-      const job = {
-        id: nextID(state.jobs),
-        type: String(payload.type || "fetch"),
-        status: "queued",
-        payload: { origin: "mock_api" },
-        created_at: now,
-        updated_at: now
-      };
-      state.jobs.unshift(job);
-      recalcJobCounters();
-      state.system.last_job_at = now;
-      broadcastEvent("job.changed", { job });
-      broadcastEvent("system.changed", {
-        system: {
-          active_jobs: state.system.active_jobs,
-          last_job_at: state.system.last_job_at,
-          overview: {
-            pending_jobs: state.system.overview.pending_jobs
-          }
-        }
-      });
-      scheduleJobLifecycle(job.id);
+      const job = enqueueMockJob(String(payload.type || "fetch"));
       sendJSON(res, 200, { status: "queued", type: job.type });
       return;
     }

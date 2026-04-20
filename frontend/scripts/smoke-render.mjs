@@ -54,6 +54,15 @@ try {
   if (!html.includes("配置文件编辑")) {
     throw new Error("前端未渲染配置编辑面板");
   }
+  if (!html.includes("候选池与人工审核")) {
+    throw new Error("前端未渲染候选池页面标题");
+  }
+  if (!html.includes("手动发现")) {
+    throw new Error("前端未渲染候选池发现按钮");
+  }
+  if (!html.includes("选择候选查看来源与评分拆解")) {
+    throw new Error("前端未渲染候选池详情抽屉空态");
+  }
   if (!html.includes("保存前差异预览")) {
     throw new Error("前端未渲染配置差异预览面板");
   }

@@ -75,6 +75,54 @@ export async function listVideos(baseURL, filters = {}) {
   return Array.isArray(payload?.items) ? payload.items : [];
 }
 
+export async function listCandidateCreators(baseURL, filters = {}) {
+  const payload = await request(baseURL, `/candidate-creators${buildQuery(filters)}`, {
+    method: "GET"
+  });
+  return {
+    items: Array.isArray(payload?.items) ? payload.items : [],
+    total: Number(payload?.total) || 0,
+    page: Number(payload?.page) || 1,
+    page_size: Number(payload?.page_size) || Number(filters?.page_size) || 20
+  };
+}
+
+export async function getCandidateCreator(baseURL, id) {
+  return request(baseURL, `/candidate-creators/${id}`, {
+    method: "GET"
+  });
+}
+
+export async function triggerCandidateDiscover(baseURL) {
+  return request(baseURL, "/candidate-creators/discover", {
+    method: "POST"
+  });
+}
+
+export async function approveCandidateCreator(baseURL, id) {
+  return request(baseURL, `/candidate-creators/${id}/approve`, {
+    method: "POST"
+  });
+}
+
+export async function ignoreCandidateCreator(baseURL, id) {
+  return request(baseURL, `/candidate-creators/${id}/ignore`, {
+    method: "POST"
+  });
+}
+
+export async function blockCandidateCreator(baseURL, id) {
+  return request(baseURL, `/candidate-creators/${id}/block`, {
+    method: "POST"
+  });
+}
+
+export async function reviewCandidateCreator(baseURL, id) {
+  return request(baseURL, `/candidate-creators/${id}/review`, {
+    method: "POST"
+  });
+}
+
 export async function getSystemStatus(baseURL) {
   return request(baseURL, "/system/status", {
     method: "GET"

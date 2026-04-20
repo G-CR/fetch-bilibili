@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import {
+  applyCandidateDetailSnapshot,
+  applyCandidateListSnapshot,
+  applyCandidateReviewAction,
   applyLiveEvent,
   applyRemoteSnapshot,
   applySystemStatusSnapshot,
   createDefaultState,
+  deriveCandidateInsights,
   deriveCleanupPreview,
   deriveMetrics,
   deriveTaskDiagnostics
@@ -177,6 +181,7 @@ const defaults = createDefaultState();
 assert.equal(defaults.creators.length, 0);
 assert.equal(defaults.videos.length, 0);
 assert.equal(defaults.jobs.length, 0);
+assert.equal(defaults.candidatePool.items.length, 0);
 
 const liveBase = applyRemoteSnapshot(createDefaultState(), {
   creators: [{ id: 1, uid: "1001", name: "旧博主", platform: "bilibili", status: "active" }],
@@ -238,6 +243,150 @@ const afterStorageChanged = applyLiveEvent(afterCreatorChanged, {
   }
 });
 assert.equal(afterStorageChanged.storage.usedBytes, 2048);
+
+const candidateListState = applyCandidateListSnapshot(
+  createDefaultState(),
+  {
+    items: [
+      {
+        id: 301,
+        platform: "bilibili",
+        uid: "9001",
+        name: "候选补档站",
+        profile_url: "https://space.bilibili.com/9001",
+        follower_count: 321000,
+        status: "reviewing",
+        score: 88,
+        score_version: "v1",
+        last_discovered_at: "2026-04-13T09:30:00+08:00",
+        last_scored_at: "2026-04-13T09:35:00+08:00",
+        sources: [
+          {
+            id: 1,
+            source_type: "keyword",
+            source_value: "补档",
+            source_label: "关键词：补档",
+            weight: 15,
+            detail_json: {
+              keyword: "补档",
+              videos: [
+                {
+                  UID: "9001",
+                  CreatorName: "候选补档站",
+                  VideoID: "BV1seed301",
+                  Title: "补档测试视频",
+                  PublishTime: "2026-04-13T08:00:00+08:00",
+                  ViewCount: 4200,
+                  FavoriteCount: 320
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        id: 302,
+        platform: "bilibili",
+        uid: "9002",
+        name: "观察名单",
+        follower_count: 98000,
+        status: "ignored",
+        score: 64,
+        score_version: "v1",
+        last_discovered_at: "2026-04-12T12:00:00+08:00",
+        ignored_at: "2026-04-13T10:00:00+08:00",
+        sources: []
+      }
+    ],
+    total: 2,
+    page: 1,
+    page_size: 20
+  },
+  "2026-04-13 20:30:00"
+);
+
+assert.equal(candidateListState.candidatePool.items.length, 2);
+assert.equal(candidateListState.candidatePool.total, 2);
+assert.equal(candidateListState.candidatePool.lastSyncAt, "2026-04-13 20:30:00");
+assert.equal(candidateListState.candidatePool.items[0].sources[0].detail.keyword, "补档");
+assert.equal(candidateListState.candidatePool.items[0].sources[0].detail.videos[0].videoId, "BV1seed301");
+assert.equal(candidateListState.candidatePool.items[0].sources[0].detail.videos[0].viewCount, 4200);
+
+const candidateInsights = deriveCandidateInsights(candidateListState, new Date("2026-04-13T20:30:00+08:00"));
+assert.equal(candidateInsights.reviewingCount, 1);
+assert.equal(candidateInsights.highPriorityCount, 1);
+assert.equal(candidateInsights.discoveredTodayCount, 1);
+assert.equal(candidateInsights.ignoredCount, 1);
+assert.deepEqual(candidateInsights.scoreBands, {
+  high: 1,
+  medium: 1,
+  low: 0
+});
+
+const candidateDetailState = applyCandidateDetailSnapshot(candidateListState, {
+  candidate: {
+    id: 301,
+    platform: "bilibili",
+    uid: "9001",
+    name: "候选补档站",
+    follower_count: 321000,
+    status: "reviewing",
+    score: 88,
+    score_version: "v1",
+    last_discovered_at: "2026-04-13T09:30:00+08:00",
+    profile_url: "https://space.bilibili.com/9001"
+  },
+  sources: [
+    {
+      id: 1,
+      source_type: "keyword",
+      source_value: "补档",
+      source_label: "关键词：补档",
+      weight: 15,
+      detail_json: {
+        keyword: "补档",
+        videos: [
+          {
+            UID: "9001",
+            CreatorName: "候选补档站",
+            VideoID: "BV1seed301",
+            Title: "补档测试视频",
+            PublishTime: "2026-04-13T08:00:00+08:00",
+            ViewCount: 4200,
+            FavoriteCount: 320
+          }
+        ]
+      }
+    }
+  ],
+  score_details: [
+    {
+      id: 7,
+      factor_key: "keyword_risk",
+      factor_label: "命中高风险关键词",
+      score_delta: 30,
+      detail_json: {
+        keywords: ["补档", "未删减"]
+      }
+    }
+  ]
+});
+
+assert.equal(candidateDetailState.candidatePool.selectedID, 301);
+assert.equal(candidateDetailState.candidatePool.detail.candidate.name, "候选补档站");
+assert.equal(candidateDetailState.candidatePool.detail.scoreDetails[0].factorKey, "keyword_risk");
+assert.equal(candidateDetailState.candidatePool.detail.scoreDetails[0].detail.keywords[1], "未删减");
+
+const candidateIgnoredState = applyCandidateReviewAction(
+  candidateDetailState,
+  301,
+  "ignored",
+  "2026-04-13T20:40:00+08:00"
+);
+
+assert.equal(candidateIgnoredState.candidatePool.items[0].status, "ignored");
+assert.equal(candidateIgnoredState.candidatePool.items[0].ignoredAt, "2026-04-13T20:40:00+08:00");
+assert.equal(candidateIgnoredState.candidatePool.detail.candidate.status, "ignored");
 assert.equal(afterStorageChanged.storage.rootDir, "/data/new");
 
 const afterSystemChanged = applyLiveEvent(afterStorageChanged, {

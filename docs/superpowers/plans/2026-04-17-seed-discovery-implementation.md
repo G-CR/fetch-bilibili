@@ -578,7 +578,7 @@ git commit -m "feat(发现): 增加候选池 HTTP API"
 - 修改：`frontend/scripts/e2e/mock-api.mjs`
 - 修改：`frontend/e2e/dashboard.spec.js`
 
-- [ ] **步骤 1：先写前端状态失败测试**
+- [x] **步骤 1：先写前端状态失败测试**
 
 覆盖用例：
 - 候选池列表归一化
@@ -589,7 +589,7 @@ git commit -m "feat(发现): 增加候选池 HTTP API"
 运行：`cd frontend && npm run test:state`
 预期：FAIL，提示缺少 candidate state 处理
 
-- [ ] **步骤 2：扩展前端 API 层**
+- [x] **步骤 2：扩展前端 API 层**
 
 新增方法：
 
@@ -603,7 +603,7 @@ export async function blockCandidateCreator(baseURL, id) {}
 export async function reviewCandidateCreator(baseURL, id) {}
 ```
 
-- [ ] **步骤 3：实现候选池页面**
+- [x] **步骤 3：实现候选池页面**
 
 要求：
 - 左侧导航新增 `候选池`
@@ -612,7 +612,7 @@ export async function reviewCandidateCreator(baseURL, id) {}
 - 行级操作：`加入追踪 / 忽略 / 拉黑 / 查看详情`
 - 详情抽屉展示来源列表与评分明细
 
-- [ ] **步骤 4：补 E2E / smoke 验证**
+- [x] **步骤 4：补 E2E / smoke 验证**
 
 运行：
 - `cd frontend && npm run test:smoke`
@@ -620,10 +620,16 @@ export async function reviewCandidateCreator(baseURL, id) {}
 
 预期：先 FAIL，再 PASS
 
-- [ ] **步骤 5：运行前端完整验证**
+- [x] **步骤 5：运行前端完整验证**
 
 运行：`cd frontend && npm run test:state && npm run test:smoke && npm run build`
 预期：PASS
+
+已完成验证：
+- `cd frontend && npm run test:state`
+- `cd frontend && npm run test:smoke`
+- `cd frontend && npm run test:e2e`
+- `cd frontend && npm run build`
 
 - [ ] **步骤 6：Commit**
 

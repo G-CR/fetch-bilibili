@@ -126,6 +126,48 @@ test("点击立即拉取后任务状态会自动推进", async ({ page }) => {
   await expect(latestFetchJob).toContainText("已完成", { timeout: 5000 });
 });
 
+test("候选池可以查看详情并执行审核动作", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("sync-button").click();
+
+  await page.getByRole("button", { name: "候选池" }).click();
+
+  const candidateRow = page.getByTestId("candidate-row-301");
+  await expect(candidateRow).toContainText("候选补档站");
+  await expect(candidateRow).toContainText("88 分");
+
+  await page.getByLabel("候选关键词筛选").fill("补档");
+  await page.getByTestId("candidate-filter-submit").click();
+
+  await expect(candidateRow).toBeVisible();
+  await candidateRow.getByRole("button", { name: "查看详情" }).click();
+
+  const drawer = page.getByTestId("candidate-drawer");
+  await expect(drawer).toContainText("评分拆解");
+  await expect(drawer).toContainText("补档测试视频");
+  await expect(drawer).toContainText("命中高风险关键词");
+
+  await drawer.getByRole("button", { name: "忽略" }).click();
+  await expect(candidateRow).toContainText("已忽略");
+  await expect(drawer.getByRole("button", { name: "恢复审核" })).toBeVisible();
+
+  await drawer.getByRole("button", { name: "恢复审核" }).click();
+  await expect(candidateRow).toContainText("审核中");
+  await expect(candidateRow.getByRole("button", { name: "加入追踪" })).toBeVisible();
+});
+
+test("候选池批准后会加入正式追踪", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("sync-button").click();
+  await page.getByRole("button", { name: "候选池" }).click();
+
+  const candidateRow = page.getByTestId("candidate-row-301");
+  await candidateRow.getByRole("button", { name: "加入追踪" }).click();
+
+  await expect(candidateRow).toContainText("已批准");
+  await expect(page.getByTestId("creator-list")).toContainText("候选补档站");
+});
+
 test("SSE 断线后页面会提示重连中", async ({ page, request }) => {
   await page.goto("/");
   await page.getByTestId("sync-button").click();
