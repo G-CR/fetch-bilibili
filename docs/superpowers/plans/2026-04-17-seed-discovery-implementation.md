@@ -352,7 +352,7 @@ func (s *Service) Review(ctx context.Context, id int64) error
 运行：`go test ./internal/discovery -run 'TestService' -count=1`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add internal/discovery/service.go internal/discovery/service_test.go internal/creator/service.go internal/repo/repo.go
@@ -651,7 +651,7 @@ git commit -m "feat(发现): 增加候选池前端审核页面"
 - 修改：`docs/config.md`
 - 修改：`docs/todo.md`
 
-- [ ] **步骤 1：先写关系扩散失败测试**
+- [x] **步骤 1：先写关系扩散失败测试**
 
 覆盖用例：
 - 从已追踪博主出发只做一跳扩散
@@ -661,14 +661,14 @@ git commit -m "feat(发现): 增加候选池前端审核页面"
 运行：`go test ./internal/discovery ./internal/platform/bilibili -run 'TestRelatedDiscoverer' -count=1`
 预期：FAIL
 
-- [ ] **步骤 2：实现轻量关系扩散**
+- [x] **步骤 2：实现轻量关系扩散**
 
 建议优先顺序：
 - 先复用关键词视频搜索结果中的作者共现
 - 再补充已追踪博主公开视频标题词相似度
 - 严格限制只做一跳，不做递归扩散
 
-- [ ] **步骤 3：更新文档**
+- [x] **步骤 3：更新文档**
 
 文档至少覆盖：
 - 候选池使用方式
@@ -677,7 +677,7 @@ git commit -m "feat(发现): 增加候选池前端审核页面"
 - 当前一期只支持 B 站、人工审核转正
 - 批准后可选触发“定向拉取”，不会触发全量拉取
 
-- [ ] **步骤 4：运行项目级验证**
+- [x] **步骤 4：运行项目级验证**
 
 运行：
 - `go test ./... -count=1`
@@ -687,6 +687,12 @@ git commit -m "feat(发现): 增加候选池前端审核页面"
 - `docker compose build`
 
 预期：PASS
+
+当前验证结果：
+- `/opt/homebrew/bin/go test ./... -count=1`：PASS
+- `cd frontend && /opt/homebrew/bin/npm run test:state`：PASS
+- `cd frontend && /opt/homebrew/bin/npm run test:smoke`：PASS
+- `cd frontend && /opt/homebrew/bin/npm run build`：PASS
 
 - [ ] **步骤 5：Commit**
 

@@ -38,6 +38,42 @@ scheduler:
   cleanup_interval: "24h"
   check_stable_days: 30
 
+discovery:
+  enabled: true
+  interval: "24h"
+  max_keywords_per_run: 20
+  max_pages_per_keyword: 2
+  max_candidates_per_run: 100
+  max_related_per_creator: 10
+  auto_enqueue_fetch_on_approve: true
+  score_version: "v1"
+  keywords:
+    - "影视剪辑"
+    - "直播切片"
+    - "补档"
+    - "重传"
+    - "演唱会"
+    - "MV"
+  score_weights:
+    keyword_risk:
+      max: 40
+    activity_30d:
+      low: 5
+      medium: 10
+      high: 15
+    similarity:
+      weak: 5
+      medium: 10
+      strong: 20
+    deletion_trace:
+      single: 10
+      max: 20
+    account_size:
+      small_bonus: 10
+      oversize_penalty: -5
+    feedback:
+      ignore_penalty: -15
+
 limits:
   global_qps: 2
   per_creator_qps: 1
@@ -96,13 +132,34 @@ logging:
 - `cleanup_interval`：清理任务周期。
 - `check_stable_days`：稳定阈值天数（默认 30）。
 
-### 3.4 limits
+### 3.4 discovery
+- `enabled`：是否启用自动发现调度。默认 `false`。
+- `interval`：discover 任务自动调度周期，默认 `24h`。
+- `max_keywords_per_run`：单次运行最多使用多少个关键词。
+- `max_pages_per_keyword`：每个关键词最多抓取多少页搜索结果。
+- `max_candidates_per_run`：单次 discover 最多写入多少个候选。
+- `max_related_per_creator`：每个已追踪博主最多扩散出多少个关联候选。
+- `auto_enqueue_fetch_on_approve`：批准候选后，是否自动为该博主创建一次定向 fetch。
+- `score_version`：候选评分版本号，便于后续演进。
+- `keywords`：关键词发现入口。
+- `score_weights`：候选评分权重。
+
+补充说明：
+- 当前一期只支持 B 站。
+- 自动发现分两层：
+  - 关键词发现：直接搜索作者 / 视频。
+  - 一跳关系扩散：从已追踪博主的最近公开视频出发，基于标题关键词与相似度做一次扩散。
+- 关系扩散严格只做一跳，不会递归发现“候选的候选”。
+- 候选不会自动转正，必须人工审核。
+- `auto_enqueue_fetch_on_approve=true` 时，批准后只会定向拉取该博主，不会触发全量 fetch。
+
+### 3.5 limits
 - `global_qps`：全局请求速率限制。
 - `per_creator_qps`：单博主请求速率限制。
 - `download_concurrency`：下载并发数。
 - `check_concurrency`：检查并发数。
 
-### 3.5 creators
+### 3.6 creators
 - `file`：博主列表文件路径（YAML/JSON）。
 - `reload_interval`：动态刷新周期，设为 `0` 表示仅启动时加载。
 - 可参考 `configs/creators.example.yaml`。
@@ -120,13 +177,13 @@ creators:
 - 如果某个博主已通过 HTTP 删除接口被手工移除（status=removed），文件同步不会将其自动恢复。
 - 如需恢复已手工移除的博主，请再次通过 `POST /creators` 添加相同 UID。
 
-### 3.5.1 浏览目录同步
+### 3.6.1 浏览目录同步
 - 浏览目录不是单独配置项，默认复用 `storage.root_dir`。
 - 启动时会先做一次全量重建。
 - 运行中通过 `creator.changed` / `video.changed` 事件按博主增量重建。
 - 当前版本内置每 6 小时一次全量对账，用于修复投影偏差；该周期暂未暴露为配置项。
 
-### 3.6 bilibili
+### 3.7 bilibili
 - `resolve_name_cache_ttl`：名称解析为 UID 的缓存时间。
 - `request_timeout`：请求超时。
 - `user_agent`：请求 UA。
@@ -139,12 +196,12 @@ creators:
 - `risk_backoff_max`：退避最大时长（指数增长上限）。
 - `risk_backoff_jitter`：退避抖动比例（0~1）。
 
-### 3.7 mysql
+### 3.8 mysql
 - `dsn`：MySQL 连接串。
 - `auto_migrate`：是否在服务启动时自动执行内置迁移，默认开启；仅在外部迁移平台已接管 schema 变更时关闭。
 - `max_open_conns` / `max_idle_conns` / `conn_max_lifetime`：连接池配置。
 
-### 3.8 logging
+### 3.9 logging
 - `level`：日志级别。
 - `format`：日志格式（json/text）。
 - `output`：输出位置（stdout/file）。

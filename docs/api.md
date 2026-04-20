@@ -121,9 +121,161 @@ ready
 }
 ```
 
-## 3. 任务
+## 3. 候选池（自动发现 + 人工审核）
 
-### 3.1 `POST /jobs`
+说明：
+- 当前一期只支持 `bilibili`
+- 候选池不会自动转正，必须人工审核
+- `approve` 成功后，如开启配置项，系统只会为该博主创建一次定向 fetch，不会触发全量 fetch
+
+### 3.1 `GET /candidate-creators`
+- 用途：查询候选博主列表
+- 参数：
+  - `status`：按候选状态过滤，可选 `reviewing / ignored / blocked / approved`
+  - `min_score`：按最低评分过滤
+  - `keyword`：按名称 / UID / 来源标签模糊过滤
+  - `page`：页码，默认 `1`
+  - `page_size`：每页条数，默认 `20`
+
+- 示例：
+
+```text
+GET /candidate-creators?status=reviewing&min_score=80&keyword=补档&page=1&page_size=20
+```
+
+- 响应示例：
+
+```json
+{
+  "items": [
+    {
+      "id": 301,
+      "platform": "bilibili",
+      "uid": "9001",
+      "name": "候选补档站",
+      "profile_url": "https://space.bilibili.com/9001",
+      "follower_count": 321000,
+      "status": "reviewing",
+      "score": 88,
+      "score_version": "v1",
+      "last_discovered_at": "2026-04-20T12:00:00Z",
+      "sources": [
+        {
+          "id": 1,
+          "source_type": "keyword",
+          "source_value": "补档",
+          "source_label": "关键词：补档",
+          "weight": 15
+        }
+      ]
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "page_size": 20
+}
+```
+
+### 3.2 `GET /candidate-creators/{id}`
+- 用途：查询单个候选详情，返回来源列表与评分明细
+
+- 响应示例：
+
+```json
+{
+  "candidate": {
+    "id": 301,
+    "platform": "bilibili",
+    "uid": "9001",
+    "name": "候选补档站",
+    "status": "reviewing",
+    "score": 88
+  },
+  "sources": [
+    {
+      "id": 1,
+      "source_type": "keyword",
+      "source_value": "补档",
+      "source_label": "关键词：补档",
+      "weight": 15,
+      "detail_json": {
+        "keyword": "补档",
+        "videos": []
+      }
+    },
+    {
+      "id": 2,
+      "source_type": "related_creator",
+      "source_value": "1001",
+      "source_label": "关联博主：已追踪 A",
+      "weight": 10
+    }
+  ],
+  "score_details": [
+    {
+      "id": 11,
+      "factor_key": "keyword_risk",
+      "factor_label": "命中高风险关键词",
+      "score_delta": 30
+    },
+    {
+      "id": 12,
+      "factor_key": "similarity",
+      "factor_label": "与已追踪池内容相似",
+      "score_delta": 10
+    }
+  ]
+}
+```
+
+### 3.3 `POST /candidate-creators/discover`
+- 用途：手动触发一次 discover 任务
+
+- 响应示例：
+
+```json
+{
+  "status": "queued",
+  "type": "discover"
+}
+```
+
+### 3.4 `POST /candidate-creators/{id}/approve`
+- 用途：批准候选并转正为正式追踪博主
+
+- 响应示例：
+
+```json
+{
+  "id": 21,
+  "uid": "9001",
+  "name": "候选补档站",
+  "platform": "bilibili",
+  "status": "active"
+}
+```
+
+### 3.5 `POST /candidate-creators/{id}/ignore`
+### 3.6 `POST /candidate-creators/{id}/block`
+### 3.7 `POST /candidate-creators/{id}/review`
+- 用途：
+  - `ignore`：将候选标记为已忽略
+  - `block`：将候选标记为已拉黑
+  - `review`：将已忽略候选恢复为审核中
+
+- 响应示例：
+
+```json
+{
+  "status": "ok",
+  "action": "ignore",
+  "candidate_id": 301
+}
+```
+
+## 4. 任务
+
+### 4.1 `POST /jobs`
 - 用途：手动触发任务
 - 请求体：
 
@@ -137,6 +289,7 @@ ready
   - `fetch`
   - `check`
   - `cleanup`
+  - `discover`
 
 - 响应示例：
 
@@ -147,7 +300,7 @@ ready
 }
 ```
 
-### 3.2 `GET /jobs`
+### 4.2 `GET /jobs`
 - 用途：查询最近任务
 - 参数：
   - `limit`：返回条数，默认 `20`
@@ -179,9 +332,9 @@ GET /jobs?limit=10&status=queued&type=fetch
 }
 ```
 
-## 4. 视频
+## 5. 视频
 
-### 4.1 `GET /videos`
+### 5.1 `GET /videos`
 - 用途：查询最近视频
 - 参数：
   - `limit`：返回条数，默认 `20`
@@ -220,7 +373,7 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
 }
 ```
 
-### 4.2 `GET /videos/{id}`
+### 5.2 `GET /videos/{id}`
 - 用途：查询单个视频详情
 
 - 响应示例：
@@ -245,7 +398,7 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
 }
 ```
 
-### 4.3 `POST /videos/{id}/download`
+### 5.3 `POST /videos/{id}/download`
 - 用途：手动为指定视频创建下载任务
 
 - 响应示例：
@@ -258,7 +411,7 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
 }
 ```
 
-### 4.4 `POST /videos/{id}/check`
+### 5.4 `POST /videos/{id}/check`
 - 用途：手动为指定视频创建检查任务
 - 说明：
   - 当前实现会复用 `check` 任务类型，并附带 `video_id` payload
@@ -274,9 +427,9 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
 }
 ```
 
-## 5. 系统状态
+## 6. 系统状态
 
-### 5.1 `GET /system/status`
+### 6.1 `GET /system/status`
 - 用途：提供驾驶舱总览状态
 - 包含：
   - MySQL 连通状态
@@ -340,9 +493,9 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
 }
 ```
 
-## 6. 存储统计
+## 7. 存储统计
 
-### 6.1 `GET /storage/stats`
+### 7.1 `GET /storage/stats`
 - 用途：提供驾驶舱存储面板数据
 - 包含：
   - 实际已用字节数
@@ -368,7 +521,7 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
 }
 ```
 
-### 6.2 `POST /storage/cleanup`
+### 7.2 `POST /storage/cleanup`
 - 用途：手动触发一次 cleanup 任务
 
 - 响应示例：
@@ -380,9 +533,48 @@ GET /videos?limit=10&creator_id=1&state=OUT_OF_PRINT
 }
 ```
 
-## 7. 实时事件流
+## 8. 系统配置
 
-### 7.1 `GET /events/stream`
+### 8.1 `GET /system/config`
+- 用途：读取当前运行配置文件路径与全文内容
+
+- 响应示例：
+
+```text
+{
+  "path": "/app/config.yaml",
+  "content": "server:\n  addr: \":8080\"\n"
+}
+```
+
+### 8.2 `PUT /system/config`
+- 用途：保存新的配置文件内容；如果内容发生变化，服务会在写回成功后安排重启
+- 说明：
+  - 请求体必须是完整配置文本，而不是局部字段补丁
+  - 服务会先执行 YAML 解析与业务配置校验
+  - `changed=false` 表示内容未变化，不会触发重启
+
+- 请求示例：
+
+```text
+{
+  "content": "server:\n  addr: \":8080\"\nstorage:\n  root_dir: /data/bilibili\nmysql:\n  dsn: test\n"
+}
+```
+
+- 响应示例：
+
+```json
+{
+  "changed": true,
+  "restart_scheduled": true,
+  "path": "/app/config.yaml"
+}
+```
+
+## 9. 实时事件流
+
+### 9.1 `GET /events/stream`
 - 用途：为前端驾驶舱提供实时增量事件
 - 协议：SSE（`text/event-stream`）
 - 建议接入方式：
@@ -417,7 +609,7 @@ data: {"job":{"id":11,"type":"fetch","status":"running","updated_at":"2026-04-15
   - `storage.changed`：存储统计变化，通常包含 `storage`
   - `system.changed`：系统运行态增量，当前主要用于推送 `cookie` 和 `risk`；完整系统状态仍以 `GET /system/status` 为准
 
-## 8. 错误响应
+## 10. 错误响应
 
 接口错误统一返回：
 
@@ -434,20 +626,29 @@ data: {"job":{"id":11,"type":"fetch","status":"running","updated_at":"2026-04-15
 - `500`：服务内部错误
 - `503`：服务依赖尚未就绪
 
-## 9. 说明
+## 11. 说明
 
 - 当前前端驾驶舱已真实对接：
   - `GET /creators`
   - `POST /creators`
+  - `PATCH /creators/{id}`
+  - `DELETE /creators/{id}`
   - `POST /jobs`
   - `GET /jobs`
   - `GET /videos`
-  - `GET /system/status`
-  - `GET /storage/stats`
-  - `GET /events/stream`
-- 当前后端已额外实现：
-  - `PATCH /creators/{id}`
   - `GET /videos/{id}`
   - `POST /videos/{id}/download`
   - `POST /videos/{id}/check`
+  - `GET /system/status`
+  - `GET /storage/stats`
   - `POST /storage/cleanup`
+  - `GET /system/config`
+  - `PUT /system/config`
+  - `GET /events/stream`
+  - `GET /candidate-creators`
+  - `GET /candidate-creators/{id}`
+  - `POST /candidate-creators/discover`
+  - `POST /candidate-creators/{id}/approve`
+  - `POST /candidate-creators/{id}/ignore`
+  - `POST /candidate-creators/{id}/block`
+  - `POST /candidate-creators/{id}/review`

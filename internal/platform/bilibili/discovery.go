@@ -110,6 +110,10 @@ func (c *Client) SearchVideos(ctx context.Context, keyword string, page, pageSiz
 	return hits, nil
 }
 
+func (c *Client) SearchRelatedVideos(ctx context.Context, keyword string, page, pageSize int) ([]VideoHit, error) {
+	return c.SearchVideos(ctx, keyword, page, pageSize)
+}
+
 func (c *Client) wrapDiscoveryRequestError(action, keyword string, page int, err error) error {
 	wrapped := fmt.Errorf("%s失败: %w", action, err)
 	c.logDiscoveryError(action+"请求失败", keyword, page, wrapped)

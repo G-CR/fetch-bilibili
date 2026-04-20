@@ -60,8 +60,10 @@ var newJobService = func(jobRepo repo.JobRepository, broker *live.Broker) *jobs.
 var newDiscoveryService = func(candidates repo.CandidateRepository, creators *creator.Service, fetcher discovery.FetchEnqueuer, cfg config.DiscoveryConfig) *discovery.Service {
 	return discovery.NewService(candidates, creators, fetcher, cfg)
 }
-var newDiscoveryRunner = func(client *bilibili.Client, candidates repo.CandidateRepository, cfg config.DiscoveryConfig) worker.DiscoveryRunner {
-	return discovery.NewKeywordDiscoverer(client, candidates, discovery.NewScorer(cfg), cfg)
+var newDiscoveryRunner = func(client *bilibili.Client, creators repo.CreatorRepository, candidates repo.CandidateRepository, cfg config.DiscoveryConfig) worker.DiscoveryRunner {
+	keyword := discovery.NewKeywordDiscoverer(client, candidates, discovery.NewScorer(cfg), cfg)
+	related := discovery.NewRelatedDiscoverer(creators, candidates, client, discovery.NewScorer(cfg), cfg)
+	return discovery.NewCompositeDiscoverer(keyword, related)
 }
 var newWorkerHandler = func(creators repo.CreatorRepository, videos repo.VideoRepository, videoFiles repo.VideoFileRepository, jobs repo.JobRepository, client *bilibili.Client, stableDays int, storageRoot string, globalQPS, perCreatorQPS int, discoveryRunner worker.DiscoveryRunner) *worker.DefaultHandler {
 	handler := worker.NewDefaultHandler(creators, videos, videoFiles, jobs, client, stableDays, storageRoot, globalQPS, perCreatorQPS, nil)
@@ -204,7 +206,7 @@ func New(cfg config.Config) (*App, error) {
 	creatorService := creator.NewService(repos.Creators, client, nil)
 	creatorService.SetPublisher(broker)
 	candidateService := newDiscoveryService(repos.Candidates, creatorService, jobService, cfg.Discovery)
-	discoveryRunner := newDiscoveryRunner(client, repos.Candidates, cfg.Discovery)
+	discoveryRunner := newDiscoveryRunner(client, repos.Creators, repos.Candidates, cfg.Discovery)
 	handler := newWorkerHandler(
 		repos.Creators,
 		repos.Videos,

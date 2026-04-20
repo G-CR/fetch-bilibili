@@ -431,10 +431,13 @@ func TestNewWiresDiscoveryComponents(t *testing.T) {
 		}
 		return discovery.NewService(candidates, creators, fetcher, cfg)
 	}
-	newDiscoveryRunner = func(client *bilibili.Client, candidates repo.CandidateRepository, cfg config.DiscoveryConfig) worker.DiscoveryRunner {
+	newDiscoveryRunner = func(client *bilibili.Client, creators repo.CreatorRepository, candidates repo.CandidateRepository, cfg config.DiscoveryConfig) worker.DiscoveryRunner {
 		discoveryRunnerCalled = true
 		if client == nil {
 			t.Fatalf("expected bilibili client to be wired")
+		}
+		if creators == nil {
+			t.Fatalf("expected creator repository to be wired")
 		}
 		if candidates == nil {
 			t.Fatalf("expected candidate repository to be wired")

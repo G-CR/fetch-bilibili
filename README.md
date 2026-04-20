@@ -6,6 +6,7 @@
 - 博主列表文件（YAML/JSON）动态加载与定期刷新
 - 文件中移除的博主自动停用（status=paused）
 - HTTP 接口添加博主（POST /creators）
+- 候选池自动发现：关键词发现 + 一跳关系扩散 + 人工审核转正（批准后仅定向拉取）
 - HTTP 运维接口：博主停用/恢复/移除、单视频查询、单视频重下、单视频检查、手动 cleanup
 - B 站真实 API 接入（WBI 签名、可用性检查、名称解析）
 - Cookie/SESSDATA 支持 + 有效性检查
@@ -15,7 +16,9 @@
 - Docker / Compose 部署
 
 ## 当前范围与边界
-- 已实现：拉取、检查、下载、清理、启动恢复、重复任务保护、下载链路数据一致性修复、人工浏览目录投影、基础运维接口
+- 已实现：拉取、检查、下载、清理、启动恢复、重复任务保护、下载链路数据一致性修复、人工浏览目录投影、候选池自动发现、基础运维接口
+- 当前一期：只支持 B 站；自动发现 = 关键词发现 + 一跳关系扩散；候选博主必须经过人工审核后才能转正进入正式追踪
+- 批准候选后，如开启配置项，可自动触发“定向拉取”该博主，不会触发全量 fetch
 - 未实现：多平台扩展
 
 ## 快速开始（Docker Compose）
@@ -152,9 +155,35 @@ FETCH_CONFIG=/path/to/config.yaml go run ./cmd/server
 - `creators.file` / `creators.reload_interval`：博主文件路径与刷新周期
 - `storage.cleanup_retention_hours`：视频下载成功后，至少保留多少小时才允许被 cleanup 删除，默认 168 小时
 - `scheduler.check_stable_days`：稳定阈值（默认 30 天）
+- `discovery.enabled`：是否启用候选池自动发现，默认关闭
+- `discovery.interval`：自动发现调度周期
+- `discovery.keywords`：关键词发现入口
+- `discovery.auto_enqueue_fetch_on_approve`：批准候选后是否自动触发该博主的定向拉取
 - `scheduler.check_interval`：下架检查周期（默认 24h）
 - `bilibili.fetch_page_size`：单次拉取单个博主的最新视频数量，默认 5
 - `bilibili.cookie` / `bilibili.sessdata`
+
+## 候选池自动发现
+服务支持一条独立的“候选池”链路，用于给正式追踪池持续补充种子：
+
+1. 关键词发现：
+   - 通过 `discovery.keywords` 搜索作者和视频
+   - 命中候选后写入 `candidate_creators`
+2. 一跳关系扩散：
+   - 从已追踪博主出发，读取其最近公开视频
+   - 基于标题关键词和相似度搜索相关视频
+   - 只做一跳扩散，不递归追踪候选的候选
+3. 人工审核：
+   - 候选池支持 `审核中 / 已忽略 / 已拉黑 / 已批准`
+   - 只有人工 `批准` 后才会进入正式 `creators` 表
+4. 转正后拉取：
+   - 若 `discovery.auto_enqueue_fetch_on_approve=true`
+   - 批准后仅为该博主创建一次定向 fetch，不触发全量拉取
+
+前端驾驶舱中已新增“候选池”页面，支持：
+- 状态 / 最低分 / 关键词筛选
+- 查看来源列表与评分拆解
+- 加入追踪 / 忽略 / 拉黑 / 恢复审核
 
 ## 存储目录与浏览目录
 服务会在 `storage.root_dir` 下维护两套目录：
@@ -234,6 +263,8 @@ Content-Type: application/json
 - `GET /storage/stats`
 - `GET /system/config`
 - `GET /events/stream`
+- `GET /candidate-creators`
+- `GET /candidate-creators/{id}`
 
 其中 `GET /system/status` 现已补充：
 - Cookie 来源（当前配置）
@@ -246,6 +277,18 @@ Content-Type: application/json
 - 后续增量推送 `job.changed`、`video.changed`、`creator.changed`、`storage.changed`、`system.changed`
 - 前端断线后会自动重连，重连成功后自动补一次快照
 
+### 候选池接口
+- `POST /candidate-creators/discover`
+  - 手动触发一次 discover 任务
+- `POST /candidate-creators/{id}/approve`
+  - 批准候选并转正为正式追踪博主
+- `POST /candidate-creators/{id}/ignore`
+  - 将候选标记为忽略
+- `POST /candidate-creators/{id}/block`
+  - 将候选标记为拉黑
+- `POST /candidate-creators/{id}/review`
+  - 将已忽略候选恢复为审核中
+
 ### 系统配置编辑接口
 - `GET /system/config`：读取当前运行配置文件内容与路径
 - `PUT /system/config`：保存配置文件；若内容有变化，会先执行 YAML 与业务配置校验，通过后写回文件，并触发后端重启
@@ -255,7 +298,7 @@ Content-Type: application/json
 PUT /system/config
 Content-Type: application/json
 
-{"content":"server:\n  http_addr: \":8080\"\n"}
+{"content":"server:\n  addr: \":8080\"\n"}
 ```
 
 响应示例：

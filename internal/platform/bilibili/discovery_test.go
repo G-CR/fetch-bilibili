@@ -190,3 +190,60 @@ func TestSearchVideosMarksRiskOnWafError(t *testing.T) {
 		t.Fatalf("expected risk reason to be recorded")
 	}
 }
+
+func TestSearchRelatedVideosDelegatesToVideoSearch(t *testing.T) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/x/web-interface/search/type" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		q := r.URL.Query()
+		if got := q.Get("search_type"); got != "video" {
+			t.Fatalf("expected search_type=video, got %q", got)
+		}
+		if got := q.Get("keyword"); got != "演唱会" {
+			t.Fatalf("expected keyword 演唱会, got %q", got)
+		}
+		if got := q.Get("page"); got != "1" {
+			t.Fatalf("expected page=1, got %q", got)
+		}
+		if got := q.Get("page_size"); got != "8" {
+			t.Fatalf("expected page_size=8, got %q", got)
+		}
+		resp := map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"result": []map[string]any{
+					{
+						"mid":         "7788",
+						"author":      "相似作者",
+						"bvid":        "BV1related",
+						"title":       "演唱会全场录制",
+						"description": "测试",
+						"pubdate":     1710000010,
+						"play":        "456",
+						"favorite":    "78",
+						"pic":         "https://img.test/rel.jpg",
+						"duration":    "300",
+					},
+				},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := New(config.BilibiliConfig{RequestTimeout: 2 * time.Second}, nil, WithBaseURL(server.URL))
+	hits, err := client.SearchRelatedVideos(context.Background(), "演唱会", 1, 8)
+	if err != nil {
+		t.Fatalf("SearchRelatedVideos error: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit, got %d", len(hits))
+	}
+	if hits[0].UID != "7788" || hits[0].VideoID != "BV1related" {
+		t.Fatalf("unexpected hit: %+v", hits[0])
+	}
+}

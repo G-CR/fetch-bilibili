@@ -1,6 +1,6 @@
 # 项目 TODO（动态更新）
 
-最后更新时间：2026-04-17（已完成“候选池前端审核流”，当前优先级切到“关系扩散与发现文档收口”）
+最后更新时间：2026-04-20（已完成“候选池关系扩散与发现文档收口”，当前进入后续扩展评估）
 
 说明：
 - 本文档用于维护当前项目的实施优先级、执行状态和下一步动作。
@@ -60,22 +60,22 @@
 
 ## P1
 
-- [ ] `doing` 种子池自动发现与人工审核闭环
+- [x] `done` 种子池自动发现与人工审核闭环
   - 目标：完成 “B 站候选博主自动发现 -> 人工审核 -> 转正进入正式追踪” 的可运行闭环。
   - 已完成：
     - 已新增候选池表结构、仓储接口与 MySQL 实现
     - 已新增 discovery 配置、评分器、候选审核服务
     - 已接入 B 站关键词候选发现与 `discover` 任务调度
+    - 已补一跳关系扩散发现器：从已追踪博主的最近公开视频出发，按标题关键词与相似度做一次扩散
+    - 已支持同一候选聚合 `keyword` 与 `related_creator` 来源，并补齐 `similarity` 评分明细
     - 已开放候选池 HTTP API：列表、详情、手动 discover、批准 / 忽略 / 拉黑 / 恢复审核
     - 已完成前端候选池页面：筛选、详情抽屉、人工审核动作、mock e2e 联调
-  - 当前缺口：
-    - 还缺一跳关系扩散发现器
-    - 还缺 README / API / 配置文档的 discovery 收口
+    - 已完成 README / API / 配置文档的 discovery 收口
   - 最新验证：
-    - `cd frontend && npm run test:state` 已通过
-    - `cd frontend && npm run test:smoke` 已通过
-    - `cd frontend && npm run test:e2e` 已通过
-    - `cd frontend && npm run build` 已通过
+    - `/opt/homebrew/bin/go test ./... -count=1` 已通过
+    - `cd frontend && /opt/homebrew/bin/npm run test:state` 已通过
+    - `cd frontend && /opt/homebrew/bin/npm run test:smoke` 已通过
+    - `cd frontend && /opt/homebrew/bin/npm run build` 已通过
 
 - [x] `done` 测试覆盖率补强（`>= 85%`）
   - 目标：在不修改业务行为的前提下，补齐低覆盖率分支测试，让仓库总体覆盖率达到开发规范基线。
@@ -230,6 +230,6 @@
 
 ## 当前推荐执行顺序
 
-1. 补任务 8：一跳关系扩散与发现文档收口
+1. 平台适配层抽象（为多平台扩展预留统一接口）
 2. 多平台扩展
 3. App 化
