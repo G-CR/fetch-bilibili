@@ -136,6 +136,7 @@ run_health_frontend() {
 
 print_summary() {
   local mode="$1"
+  local include_frontend="${2:-1}"
   log_info "状态摘要"
   log_info "- 命令：$mode"
   if [[ $NO_VERIFY -eq 1 ]]; then
@@ -144,7 +145,9 @@ print_summary() {
     log_info "- 校验：已执行"
   fi
   log_info "- 后端地址：http://localhost:8080"
-  log_info "- 前端地址：http://localhost:5173"
+  if [[ "$include_frontend" == "1" ]]; then
+    log_info "- 前端地址：http://localhost:5173"
+  fi
 }
 
 cmd_deploy_all() {
@@ -171,7 +174,7 @@ cmd_deploy_all() {
 
   run_health_backend
   run_health_frontend
-  print_summary "deploy-all"
+  print_summary "deploy-all" 1
 }
 
 cmd_deploy_app() {
@@ -192,7 +195,7 @@ cmd_deploy_app() {
   fi
 
   run_health_backend
-  print_summary "deploy-app"
+  print_summary "deploy-app" 0
 }
 
 check_restart_containers() {
@@ -219,7 +222,7 @@ cmd_restart() {
 
   run_health_backend
   run_health_frontend
-  print_summary "restart"
+  print_summary "restart" 1
 }
 
 cmd_status() {

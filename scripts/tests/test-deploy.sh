@@ -199,9 +199,26 @@ disable_fixture_fallbacks() {
   local script_path="$fixture/repo/scripts/deploy.sh"
   local fake_go="$fixture/fallbacks/go"
   local fake_npm="$fixture/fallbacks/npm"
+  local script_content
+  local search_go="/usr/local/go/bin/go"
+  local search_npm="/usr/local/bin/npm"
   mkdir -p "$fixture/fallbacks"
 
-  perl -0pi -e 's#/usr/local/go/bin/go#'"$fake_go"'#g; s#/usr/local/bin/npm#'"$fake_npm"'#g' "$script_path"
+  script_content="$(cat "$script_path")"
+  script_content="${script_content//$search_go/$fake_go}"
+  script_content="${script_content//$search_npm/$fake_npm}"
+  printf '%s' "$script_content" > "$script_path"
+}
+
+shadow_perl_unavailable() {
+  local fixture="$1"
+  cat > "$fixture/bin/perl" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "unexpected perl $*" >>"${TMP_LOG:?}"
+exit 127
+SCRIPT
+  chmod +x "$fixture/bin/perl"
 }
 
 write_failing_verify_commands() {
@@ -252,10 +269,14 @@ smoke_no_verify_skips_tests_but_not_build() {
 smoke_deploy_app_without_frontend_build() {
   local fixture="$1"
   : >"$fixture/log"
-  run_deploy "$fixture" deploy-app >/dev/null
+  local output
+  output="$(run_deploy "$fixture" deploy-app)"
 
   assert_file_not_contains "$fixture/log" "npm run build" "deploy-app 不应执行前端构建"
   assert_file_contains "$fixture/log" "docker compose up -d --build app" "deploy-app 应仅部署 app"
+  if [[ "$output" == *"前端地址：http://localhost:5173"* ]]; then
+    fail "deploy-app 摘要不应误导输出前端地址"
+  fi
 }
 
 smoke_restart_fails_when_container_missing() {
@@ -332,6 +353,7 @@ smoke_deploy_healthcheck_retries_before_success() {
 smoke_deploy_all_no_verify_without_go() {
   local fixture="$1"
   : >"$fixture/log"
+  shadow_perl_unavailable "$fixture"
   disable_fixture_fallbacks "$fixture"
   remove_fixture_command "$fixture" "go"
 
