@@ -69,6 +69,7 @@ mysql:
     HttpCalls = Join-Path $fixtureRoot 'http-calls.log'
     PsJson = '{"Service":"app","Name":"fetch_bilibili"}' + [Environment]::NewLine + '{"Service":"frontend","Name":"fetch_bilibili_frontend"}'
     ForceHealthFail = $false
+    ComposeUpFailMode = ''
   }
 }
 
@@ -85,19 +86,44 @@ function Set-MockFunctions([pscustomobject]$Fixture, [switch]$FailGo, [switch]$F
 
   function global:docker {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-    Add-Content -LiteralPath $script:CurrentFixture.Log -Value ("docker {0}" -f ($Args -join ' '))
+    Add-Content -LiteralPath $script:CurrentFixture.Log -Value ("DOCKER_BUILDKIT={0} docker {1}" -f $env:DOCKER_BUILDKIT, ($Args -join ' '))
 
     if ($Args.Count -ge 2 -and $Args[0] -eq 'compose' -and $Args[1] -eq 'ps') {
       if ($env:MOCK_PS_FAIL -eq '1') {
+        $global:LASTEXITCODE = 1
         throw 'mock compose ps failed'
       }
+      $global:LASTEXITCODE = 0
       $script:CurrentFixture.PsJson
       return
     }
 
+    if ($Args.Count -ge 2 -and $Args[0] -eq 'compose' -and $Args[1] -eq 'up') {
+      switch ($script:CurrentFixture.ComposeUpFailMode) {
+        'proxy' {
+          if ($env:DOCKER_BUILDKIT -ne '0') {
+            Write-Output 'failed to fetch anonymous token: Get "https://example.invalid": proxyconnect tcp: dial tcp 127.0.0.1:7890: connect: connection refused'
+            $global:LASTEXITCODE = 1
+            return
+          }
+        }
+        'normal' {
+          Write-Output 'normal compose failure'
+          $global:LASTEXITCODE = 1
+          return
+        }
+      }
+
+      $global:LASTEXITCODE = 0
+      return
+    }
+
     if ($Args.Count -ge 2 -and $Args[0] -eq 'compose' -and $Args[1] -eq 'restart' -and $env:MOCK_RESTART_FAIL -eq '1') {
+      $global:LASTEXITCODE = 1
       throw 'mock restart failed'
     }
+
+    $global:LASTEXITCODE = 0
   }
 
   function global:go {
@@ -245,6 +271,21 @@ function Smoke-RestartParsesJsonWithSpacingAndFieldOrder([pscustomobject]$Fixtur
   Assert-Contains $log 'docker compose restart app frontend' 'restart 识别容器存在后应继续执行重启'
 }
 
+function Smoke-DeployAppRetriesWithoutBuildKitOnProxyError([pscustomobject]$Fixture) {
+  Set-MockFunctions -Fixture $Fixture
+  $Fixture.ComposeUpFailMode = 'proxy'
+
+  $result = Invoke-Deploy -Fixture $Fixture -Args @('deploy-app', '--no-verify')
+  if (-not $result.Succeeded) {
+    Fail "deploy-app 代理兜底执行失败: $($result.ErrorMessage)"
+  }
+
+  $log = (Get-Content -LiteralPath $Fixture.Log -Raw)
+  Assert-Contains $result.Output '关闭 BuildKit 后重试' '遇到失效本地代理时应提示关闭 BuildKit 重试'
+  Assert-Contains $log 'DOCKER_BUILDKIT= docker compose up -d --build app' '首次 compose up 应先按默认 BuildKit 执行'
+  Assert-Contains $log 'DOCKER_BUILDKIT=0 docker compose up -d --build app' '代理异常时应关闭 BuildKit 重试'
+}
+
 function Smoke-StatusPrintsSummaryOnHealthFailure([pscustomobject]$Fixture) {
   Set-MockFunctions -Fixture $Fixture
   $Fixture.ForceHealthFail = $true
@@ -282,6 +323,7 @@ function Main() {
 
     Smoke-DefaultCommandEqualsDeployAll (New-Fixture 'default')
     Smoke-NoVerifySkipsVerifyButNotBuild (New-Fixture 'no-verify')
+    Smoke-DeployAppRetriesWithoutBuildKitOnProxyError (New-Fixture 'proxy-fallback')
     Smoke-RestartParsesJsonWithSpacingAndFieldOrder (New-Fixture 'restart-json-variants')
     Smoke-RestartFailsWhenContainerMissing (New-Fixture 'restart-missing')
     Smoke-StatusPrintsSummaryOnHealthFailure (New-Fixture 'status-health-fail')

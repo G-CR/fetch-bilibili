@@ -77,7 +77,7 @@ JSON
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "docker $*" >>"${TMP_LOG:?}"
+echo "DOCKER_BUILDKIT=${DOCKER_BUILDKIT:-} docker $*" >>"${TMP_LOG:?}"
 
 if [[ "${1:-} ${2:-}" == "compose ps" ]]; then
   if [[ "${MOCK_PS_FAIL:-0}" == "1" ]]; then
@@ -89,6 +89,22 @@ if [[ "${1:-} ${2:-}" == "compose ps" ]]; then
     printf '{"Service":"app","Name":"fetch_bilibili"}\n'
     printf '{"Service":"frontend","Name":"fetch_bilibili_frontend"}\n'
   fi
+  exit 0
+fi
+
+if [[ "${1:-} ${2:-}" == "compose up" ]]; then
+  case "${MOCK_COMPOSE_UP_FAIL_MODE:-}" in
+    proxy)
+      if [[ "${DOCKER_BUILDKIT:-}" != "0" ]]; then
+        printf '%s\n' 'failed to fetch anonymous token: Get "https://example.invalid": proxyconnect tcp: dial tcp 127.0.0.1:7890: connect: connection refused' >&2
+        exit 1
+      fi
+      ;;
+    normal)
+      printf '%s\n' 'normal compose failure' >&2
+      exit 1
+      ;;
+  esac
   exit 0
 fi
 
@@ -279,6 +295,17 @@ smoke_deploy_app_without_frontend_build() {
   fi
 }
 
+smoke_proxy_error_retries_without_buildkit() {
+  local fixture="$1"
+  : >"$fixture/log"
+  local output
+  output="$(MOCK_COMPOSE_UP_FAIL_MODE=proxy run_deploy "$fixture" deploy-app --no-verify 2>&1)"
+
+  assert_contains "$output" "关闭 BuildKit 后重试" "遇到失效本地代理时应提示关闭 BuildKit 重试"
+  assert_file_contains "$fixture/log" "DOCKER_BUILDKIT= docker compose up -d --build app" "首次 compose up 应先按默认 BuildKit 执行"
+  assert_file_contains "$fixture/log" "DOCKER_BUILDKIT=0 docker compose up -d --build app" "代理异常时应关闭 BuildKit 重试"
+}
+
 smoke_restart_fails_when_container_missing() {
   local fixture="$1"
   : >"$fixture/log"
@@ -405,6 +432,9 @@ main() {
 
   make_fixture "$TMP_DIR/deploy-app"
   smoke_deploy_app_without_frontend_build "$TMP_DIR/deploy-app"
+
+  make_fixture "$TMP_DIR/proxy-fallback"
+  smoke_proxy_error_retries_without_buildkit "$TMP_DIR/proxy-fallback"
 
   make_fixture "$TMP_DIR/deploy-app-no-verify-no-build-tools"
   smoke_deploy_app_no_verify_without_go_or_npm "$TMP_DIR/deploy-app-no-verify-no-build-tools"

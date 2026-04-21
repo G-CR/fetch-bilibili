@@ -159,7 +159,8 @@ open http://localhost:5173
   - 再确认 Docker Daemon 已配置 `registry-mirrors`
   - 最后执行 `docker compose config` 检查实际生效的镜像地址
 - Docker 构建时被本地代理拦截：
-  - 如果当前 shell 设置了 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，可执行 `env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY docker compose up -d --build`
+  - `./scripts/deploy.sh` 与 `powershell -File .\scripts\deploy.ps1` 会在识别到 `127.0.0.1:7890` 一类 BuildKit 本地代理残留错误时，自动改用 `DOCKER_BUILDKIT=0` 重试
+  - 如需手工绕过，可直接执行 `DOCKER_BUILDKIT=0 docker compose up -d --build`
   - 典型现象是日志里出现 `127.0.0.1:7890`、`connection reset by peer` 或镜像鉴权失败
 
 ## 10. 下一步建议

@@ -123,6 +123,54 @@ function Invoke-DockerCompose {
   Invoke-Native -Command $script:DOCKER_CMD -Arguments $allArgs
 }
 
+function Test-ShouldRetryWithoutBuildKit {
+  param([string]$Output)
+
+  if ($env:DOCKER_BUILDKIT -eq '0') {
+    return $false
+  }
+
+  return $Output -match 'proxyconnect tcp: dial tcp (127\.0\.0\.1|localhost|\[::1\]):\d+'
+}
+
+function Invoke-DockerComposeBuildWithFallback {
+  param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+
+  $global:LASTEXITCODE = 0
+  $output = (& $script:DOCKER_CMD compose @Arguments 2>&1 | Out-String)
+  $exitCode = if ($global:LASTEXITCODE -is [int]) { $global:LASTEXITCODE } else { 0 }
+
+  if ($exitCode -eq 0) {
+    if (-not [string]::IsNullOrWhiteSpace($output)) {
+      Write-Host $output.TrimEnd()
+    }
+    return
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($output)) {
+    Write-Host $output.TrimEnd()
+  }
+
+  if (Test-ShouldRetryWithoutBuildKit -Output $output) {
+    Write-WarnMessage '检测到 Docker BuildKit 使用了失效的本地代理，改为关闭 BuildKit 后重试'
+    $originalBuildkit = $env:DOCKER_BUILDKIT
+
+    try {
+      $env:DOCKER_BUILDKIT = '0'
+      Invoke-DockerCompose @Arguments
+      return
+    } finally {
+      if ($null -eq $originalBuildkit) {
+        Remove-Item Env:DOCKER_BUILDKIT -ErrorAction SilentlyContinue
+      } else {
+        $env:DOCKER_BUILDKIT = $originalBuildkit
+      }
+    }
+  }
+
+  throw "command-exit-$exitCode"
+}
+
 function Invoke-BackendVerify {
   Write-Step '执行后端测试'
   Push-Location $script:REPO_ROOT
@@ -254,7 +302,7 @@ function Invoke-DeployAll {
   Push-Location $script:REPO_ROOT
   try {
     try {
-      Invoke-DockerCompose up -d --build
+      Invoke-DockerComposeBuildWithFallback up -d --build
     } catch {
       Fail '失败原因：docker compose up 执行失败'
     }
@@ -283,7 +331,7 @@ function Invoke-DeployApp {
   Push-Location $script:REPO_ROOT
   try {
     try {
-      Invoke-DockerCompose up -d --build app
+      Invoke-DockerComposeBuildWithFallback up -d --build app
     } catch {
       Fail '失败原因：app 容器部署失败'
     }

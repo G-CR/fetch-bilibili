@@ -455,8 +455,9 @@ go test ./... -cover
   - 再确认 Docker Desktop 或 `/etc/docker/daemon.json` 已配置 `registry-mirrors`。
   - 如仍失败，可把 `.env` 里的镜像值切换为你自己的企业镜像仓库或其他可用镜像源。
 - Docker 构建时访问镜像站被 `127.0.0.1:7890` 之类本地代理拦截：
-  - 可直接执行 `env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY docker compose up -d --build`
-  - 或先临时清理当前 shell 的代理环境变量后再执行 Compose
+  - `./scripts/deploy.sh` 与 `powershell -File .\scripts\deploy.ps1` 会在识别到这类 BuildKit 残留代理错误时，自动切换到 `DOCKER_BUILDKIT=0` 重试
+  - 如需手工绕过，可直接执行 `DOCKER_BUILDKIT=0 docker compose up -d --build`
+  - 如果你仍想继续使用 BuildKit，需要继续清理 Docker Desktop / 系统代理中的旧本地回环代理配置
 
 ## 路线图
 - 实现视频下载与清理任务

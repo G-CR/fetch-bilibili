@@ -82,6 +82,44 @@ docker_compose() {
   "$DOCKER_CMD" compose "$@"
 }
 
+should_retry_without_buildkit() {
+  local output="$1"
+
+  if [[ "${DOCKER_BUILDKIT:-}" == "0" ]]; then
+    return 1
+  fi
+
+  [[ "$output" =~ proxyconnect[[:space:]]tcp:[[:space:]]dial[[:space:]]tcp[[:space:]](127\.0\.0\.1|localhost|\[::1\]):[0-9]+ ]]
+}
+
+run_compose_build_with_fallback() {
+  local output_file exit_code output
+  output_file="$(mktemp)"
+
+  if (cd "$REPO_ROOT" && docker_compose "$@") >"$output_file" 2>&1; then
+    cat "$output_file"
+    rm -f "$output_file"
+    return 0
+  fi
+
+  exit_code=$?
+  output="$(cat "$output_file")"
+  rm -f "$output_file"
+
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$output" >&2
+  fi
+
+  if should_retry_without_buildkit "$output"; then
+    log_warn "检测到 Docker BuildKit 使用了失效的本地代理，改为关闭 BuildKit 后重试"
+    if (cd "$REPO_ROOT" && DOCKER_BUILDKIT=0 docker_compose "$@"); then
+      return 0
+    fi
+  fi
+
+  return "$exit_code"
+}
+
 run_verify_backend() {
   log_step "执行后端测试"
   if ! (cd "$REPO_ROOT" && "$GO_CMD" test ./... -count=1); then
@@ -168,7 +206,7 @@ cmd_deploy_all() {
   run_build_frontend
 
   log_step "构建并启动全部容器"
-  if ! (cd "$REPO_ROOT" && docker_compose up -d --build); then
+  if ! run_compose_build_with_fallback up -d --build; then
     fail "失败原因：docker compose up 执行失败"
   fi
 
@@ -190,7 +228,7 @@ cmd_deploy_app() {
   fi
 
   log_step "构建并启动 app 容器"
-  if ! (cd "$REPO_ROOT" && docker_compose up -d --build app); then
+  if ! run_compose_build_with_fallback up -d --build app; then
     fail "失败原因：app 容器部署失败"
   fi
 
