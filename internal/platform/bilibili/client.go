@@ -37,6 +37,27 @@ func (e *PermanentError) Error() string {
 	return fmt.Sprintf("%s(%d)", e.Message, e.Code)
 }
 
+// IsRiskError reports whether err indicates a temporary Bilibili risk-control block.
+func IsRiskError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var permanent *PermanentError
+	if errors.As(err, &permanent) {
+		return permanent.Code == http.StatusForbidden ||
+			permanent.Code == http.StatusPreconditionFailed ||
+			permanent.Code == -403 ||
+			permanent.Code == -412
+	}
+
+	msg := err.Error()
+	return strings.Contains(msg, "(-403)") ||
+		strings.Contains(msg, "(-412)") ||
+		strings.Contains(msg, "请求失败: 403") ||
+		strings.Contains(msg, "请求失败: 412")
+}
+
 // permanentPlayURLCodes 是播放地址接口中明确不可恢复的错误码。
 // 87008: 视频无法播放（通常为版权限制或地区限制）
 // -404:  视频不存在

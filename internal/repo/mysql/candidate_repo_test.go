@@ -195,6 +195,29 @@ func TestCandidateRepoList(t *testing.T) {
 	}
 }
 
+func TestCandidateRepoFindByPlatformUIDMissingRecord(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, platform, uid, name, avatar_url, profile_url, follower_count, status, score, score_version, last_discovered_at, last_scored_at, approved_at, ignored_at, blocked_at, created_at, updated_at FROM candidate_creators WHERE platform = ? AND uid = ?")).
+		WithArgs("bilibili", "404").
+		WillReturnError(sql.ErrNoRows)
+
+	_, err = repoImpl.Candidates().FindByPlatformUID(context.Background(), "bilibili", "404")
+	if err != repo.ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
 func TestCandidateRepoUpdateReviewStatusRejectsIllegalTransition(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

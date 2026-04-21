@@ -333,6 +333,9 @@ func scanCandidateCreator(scanner candidateScanner) (repo.CandidateCreator, erro
 		&item.ID, &item.Platform, &item.UID, &name, &avatarURL, &profileURL, &item.FollowerCount, &item.Status, &item.Score, &item.ScoreVersion,
 		&lastDiscovered, &lastScored, &approvedAt, &ignoredAt, &blockedAt, &createdAt, &updatedAt,
 	); err != nil {
+		if err == sql.ErrNoRows {
+			return repo.CandidateCreator{}, repo.ErrNotFound
+		}
 		return repo.CandidateCreator{}, err
 	}
 	item.Name = nullString(name)

@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -68,10 +69,11 @@ func (s *relatedCreatorRepoStub) CountActive(ctx context.Context) (int64, error)
 }
 
 type relatedSourceClientStub struct {
-	videosByUID     map[string][]bilibili.VideoMeta
-	searchByKeyword map[string][]bilibili.VideoHit
-	listCalls       []string
-	searchCalls     []string
+	videosByUID        map[string][]bilibili.VideoMeta
+	searchByKeyword    map[string][]bilibili.VideoHit
+	searchErrByKeyword map[string]error
+	listCalls          []string
+	searchCalls        []string
 }
 
 func (s *relatedSourceClientStub) ListVideos(ctx context.Context, uid string) ([]bilibili.VideoMeta, error) {
@@ -81,6 +83,9 @@ func (s *relatedSourceClientStub) ListVideos(ctx context.Context, uid string) ([
 
 func (s *relatedSourceClientStub) SearchRelatedVideos(ctx context.Context, keyword string, page, pageSize int) ([]bilibili.VideoHit, error) {
 	s.searchCalls = append(s.searchCalls, keyword)
+	if err := s.searchErrByKeyword[keyword]; err != nil {
+		return nil, err
+	}
 	return append([]bilibili.VideoHit(nil), s.searchByKeyword[keyword]...), nil
 }
 
@@ -215,5 +220,50 @@ func TestRelatedDiscovererMergesWithExistingKeywordCandidate(t *testing.T) {
 	}
 	if candidates.items["2001"].Score <= 15 {
 		t.Fatalf("expected merged score > 15, got %+v", candidates.items["2001"])
+	}
+}
+
+func TestRelatedDiscovererSkipsRiskBlockedKeywordAndContinues(t *testing.T) {
+	now := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+	creators := &relatedCreatorRepoStub{
+		active: []repo.Creator{
+			{ID: 1, Platform: "bilibili", UID: "23191782", Name: "源博主", Status: "active"},
+		},
+	}
+	client := &relatedSourceClientStub{
+		videosByUID: map[string][]bilibili.VideoMeta{
+			"23191782": {
+				{VideoID: "BVsrc1", Title: "哲学进阶 补档", PublishTime: now.Add(-time.Hour)},
+			},
+		},
+		searchErrByKeyword: map[string]error{
+			"哲学进阶": errors.New("搜索视频失败: 请求失败: 412 Precondition Failed"),
+		},
+		searchByKeyword: map[string][]bilibili.VideoHit{
+			"补档": {
+				{UID: "9001", CreatorName: "候选甲", VideoID: "BV9001", Title: "补档 哲学进阶", PublishTime: now.Add(-2 * time.Hour), ViewCount: 100},
+			},
+		},
+	}
+	candidates := &candidateDiscoveryRepoStub{nextID: 20}
+	cfg := config.Default().Discovery
+	cfg.Keywords = []string{"哲学进阶", "补档"}
+	cfg.MaxRelatedPerCreator = 5
+
+	discoverer := NewRelatedDiscoverer(creators, candidates, client, NewScorer(cfg), cfg)
+	discoverer.now = func() time.Time { return now }
+
+	result, err := discoverer.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	if result.Discovered != 1 {
+		t.Fatalf("expected discovered=1, got %+v", result)
+	}
+	if len(candidates.upserts) != 1 || candidates.upserts[0].UID != "9001" {
+		t.Fatalf("expected candidate discovered from fallback keyword, got %+v", candidates.upserts)
+	}
+	if len(client.searchCalls) != 2 || client.searchCalls[0] != "哲学进阶" || client.searchCalls[1] != "补档" {
+		t.Fatalf("expected risk keyword skipped and next keyword continued, got %+v", client.searchCalls)
 	}
 }

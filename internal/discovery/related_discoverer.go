@@ -112,6 +112,9 @@ func (d *RelatedDiscoverer) Discover(ctx context.Context) (RelatedDiscoverResult
 	for _, creator := range trackedCreators {
 		metas, err := d.client.ListVideos(ctx, creator.UID)
 		if err != nil {
+			if bilibili.IsRiskError(err) {
+				continue
+			}
 			return result, fmt.Errorf("关系扩散失败: source_uid=%s 拉取公开视频失败: %w", creator.UID, err)
 		}
 
@@ -194,6 +197,9 @@ func collectRelatedHitsForCreator(
 		for _, keyword := range keywords {
 			hits, err := client.SearchRelatedVideos(ctx, keyword, 1, pageSize)
 			if err != nil {
+				if bilibili.IsRiskError(err) {
+					continue
+				}
 				return relatedPerCreatorResult{
 					err: fmt.Errorf("关系扩散失败: source_uid=%s keyword=%s 搜索相似视频失败: %w", creator.UID, keyword, err),
 				}
