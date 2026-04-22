@@ -128,7 +128,13 @@ func (r *candidateRepo) List(ctx context.Context, filter repo.CandidateListFilte
 		SELECT c.id, c.platform, c.uid, c.name, c.avatar_url, c.profile_url, c.follower_count, c.status, c.score, c.score_version,
 			c.last_discovered_at, c.last_scored_at, c.approved_at, c.ignored_at, c.blocked_at, c.created_at, c.updated_at
 		FROM candidate_creators c`+where+`
-		ORDER BY c.score DESC, c.last_discovered_at DESC, c.id DESC
+		ORDER BY CASE c.status
+			WHEN 'reviewing' THEN 0
+			WHEN 'approved' THEN 1
+			WHEN 'ignored' THEN 2
+			WHEN 'blocked' THEN 3
+			ELSE 4
+		END, c.score DESC, c.last_discovered_at DESC, c.id DESC
 		LIMIT ? OFFSET ?
 	`, listArgs...)
 	if err != nil {

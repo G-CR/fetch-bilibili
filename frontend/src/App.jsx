@@ -31,6 +31,8 @@ import {
   deriveTaskDiagnostics,
   loadState,
   makeLog,
+  paginateItems,
+  resolvePagination,
   saveState
 } from "./lib/state";
 
@@ -61,6 +63,8 @@ const SYSTEM_RECONCILE_INTERVAL_MS = 30 * 1000;
 const SNAPSHOT_RECONCILE_INTERVAL_MS = 60 * 1000;
 const CONFIG_RESTART_POLL_INTERVAL_MS = 1500;
 const CONFIG_RESTART_TIMEOUT_MS = 45 * 1000;
+const PAGE_SIZE_OPTIONS = [6, 12, 20, 50];
+const DEFAULT_CANDIDATE_FILTERS = { status: "reviewing", minScore: 0, keyword: "" };
 const AUTHORITATIVE_LIVE_EVENT_TYPES = new Set([
   "job.changed",
   "video.changed",
@@ -102,7 +106,7 @@ function App() {
   const systemRequestVersionRef = useRef(0);
   const candidateRequestVersionRef = useRef(0);
   const candidateDetailRequestVersionRef = useRef(0);
-  const candidateFiltersRef = useRef(state.candidatePool?.filters || { status: "", minScore: 0, keyword: "" });
+  const candidateFiltersRef = useRef(state.candidatePool?.filters || DEFAULT_CANDIDATE_FILTERS);
   const [activeSection, setActiveSection] = useState("overview");
   const [selectedJobId, setSelectedJobId] = useState(null);
   const [toast, setToast] = useState("");
@@ -139,8 +143,33 @@ function App() {
     () => deriveConfigDiffPreview(savedConfigText, configText),
     [savedConfigText, configText]
   );
-  const candidateFilters = state.candidatePool?.filters || { status: "", minScore: 0, keyword: "" };
+  const creatorsPager = state.pagination?.creators || { page: 1, pageSize: PAGE_SIZE_OPTIONS[0] };
+  const jobsPager = state.pagination?.jobs || { page: 1, pageSize: PAGE_SIZE_OPTIONS[0] };
+  const videosPager = state.pagination?.videos || { page: 1, pageSize: PAGE_SIZE_OPTIONS[0] };
+  const candidateFilters = state.candidatePool?.filters || DEFAULT_CANDIDATE_FILTERS;
   const candidateItems = Array.isArray(state.candidatePool?.items) ? state.candidatePool.items : [];
+  const paginatedCreators = useMemo(
+    () => paginateItems(state.creators, creatorsPager.page, creatorsPager.pageSize, PAGE_SIZE_OPTIONS[0]),
+    [creatorsPager.page, creatorsPager.pageSize, state.creators]
+  );
+  const paginatedJobs = useMemo(
+    () => paginateItems(state.jobs, jobsPager.page, jobsPager.pageSize, PAGE_SIZE_OPTIONS[0]),
+    [jobsPager.page, jobsPager.pageSize, state.jobs]
+  );
+  const paginatedVideos = useMemo(
+    () => paginateItems(state.videos, videosPager.page, videosPager.pageSize, PAGE_SIZE_OPTIONS[0]),
+    [state.videos, videosPager.page, videosPager.pageSize]
+  );
+  const candidatePagination = useMemo(
+    () =>
+      resolvePagination(
+        state.candidatePool?.total || 0,
+        state.candidatePool?.page,
+        state.candidatePool?.pageSize,
+        PAGE_SIZE_OPTIONS[0]
+      ),
+    [state.candidatePool?.page, state.candidatePool?.pageSize, state.candidatePool?.total]
+  );
   const selectedCandidateID = Number(state.candidatePool?.selectedID) || 0;
   const selectedCandidate = useMemo(() => {
     const detailCandidate = state.candidatePool?.detail?.candidate;
@@ -150,16 +179,16 @@ function App() {
     return candidateItems.find((item) => item.id === selectedCandidateID) || null;
   }, [candidateItems, selectedCandidateID, state.candidatePool?.detail]);
   const selectedJob = useMemo(() => {
-    const jobs = Array.isArray(state.jobs) ? state.jobs : [];
+    const jobs = paginatedJobs.items;
     return jobs.find((job) => job.id === selectedJobId) || jobs[0] || null;
-  }, [selectedJobId, state.jobs]);
+  }, [paginatedJobs.items, selectedJobId]);
 
   useEffect(() => {
     saveState(state);
   }, [state]);
 
   useEffect(() => {
-    candidateFiltersRef.current = state.candidatePool?.filters || { status: "", minScore: 0, keyword: "" };
+    candidateFiltersRef.current = state.candidatePool?.filters || DEFAULT_CANDIDATE_FILTERS;
   }, [state.candidatePool?.filters]);
 
   useEffect(() => {
@@ -255,7 +284,7 @@ function App() {
 
   useEffect(() => {
     setSelectedJobId((current) => {
-      const jobs = Array.isArray(state.jobs) ? state.jobs : [];
+      const jobs = paginatedJobs.items;
       if (jobs.length === 0) {
         return null;
       }
@@ -264,7 +293,7 @@ function App() {
       }
       return jobs[0].id;
     });
-  }, [state.jobs]);
+  }, [paginatedJobs.items]);
 
   useEffect(() => {
     if (!configRestartState.active) {
@@ -430,7 +459,13 @@ function App() {
     }
   }
 
-  async function syncCandidatePool({ silent = false, withLog = !silent, filters = candidateFiltersRef.current } = {}) {
+  async function syncCandidatePool({
+    silent = false,
+    withLog = !silent,
+    filters = candidateFiltersRef.current,
+    page = state.candidatePool?.page,
+    pageSize = state.candidatePool?.pageSize
+  } = {}) {
     const requestVersion = beginRequest(candidateRequestVersionRef);
     if (!silent) {
       setCandidateLoading(true);
@@ -441,13 +476,25 @@ function App() {
         minScore: Number(filters?.minScore) || 0,
         keyword: String(filters?.keyword || "")
       };
-      const payload = await listCandidateCreators(state.apiBase, {
-        page: 1,
-        page_size: 100,
+      const requestedPage = normalizePositiveInteger(page, Number(state.candidatePool?.page) || 1);
+      const requestedPageSize = normalizePositiveInteger(pageSize, Number(state.candidatePool?.pageSize) || PAGE_SIZE_OPTIONS[0]);
+      let payload = await listCandidateCreators(state.apiBase, {
+        page: requestedPage,
+        page_size: requestedPageSize,
         status: appliedFilters.status,
         min_score: appliedFilters.minScore,
         keyword: appliedFilters.keyword
       });
+      const resolvedPage = resolvePagination(payload.total, requestedPage, requestedPageSize, requestedPageSize);
+      if (payload.total > 0 && payload.items.length === 0 && requestedPage > resolvedPage.totalPages) {
+        payload = await listCandidateCreators(state.apiBase, {
+          page: resolvedPage.totalPages,
+          page_size: requestedPageSize,
+          status: appliedFilters.status,
+          min_score: appliedFilters.minScore,
+          keyword: appliedFilters.keyword
+        });
+      }
       if (!isRequestCurrent(candidateRequestVersionRef, requestVersion)) {
         return;
       }
@@ -762,14 +809,72 @@ function App() {
     }));
   }
 
+  function updateLocalPager(key, patch) {
+    updateState((previous) => {
+      const items =
+        key === "creators" ? previous.creators : key === "jobs" ? previous.jobs : key === "videos" ? previous.videos : [];
+      const currentPager = previous.pagination?.[key] || { page: 1, pageSize: PAGE_SIZE_OPTIONS[0] };
+      const nextPageSize = normalizePositiveInteger(patch?.pageSize, currentPager.pageSize);
+      const requestedPage = normalizePositiveInteger(patch?.page, currentPager.page);
+      const nextPagination = resolvePagination(items.length, requestedPage, nextPageSize, PAGE_SIZE_OPTIONS[0]);
+
+      return {
+        ...previous,
+        pagination: {
+          ...(previous.pagination || {}),
+          [key]: {
+            page: nextPagination.page,
+            pageSize: nextPagination.pageSize
+          }
+        }
+      };
+    });
+  }
+
   async function handleCandidateFilterSubmit(event) {
     event.preventDefault();
     try {
-      await syncCandidatePool({ filters: candidateFilters, silent: false });
+      await syncCandidatePool({
+        filters: candidateFilters,
+        page: 1,
+        pageSize: state.candidatePool?.pageSize,
+        silent: false
+      });
       showToast("候选池已刷新");
     } catch (error) {
       const message = formatRequestError(error);
       pushLog(`候选筛选失败: ${message}`);
+      showToast(message);
+    }
+  }
+
+  async function handleCandidateRefresh() {
+    try {
+      await syncCandidatePool({ silent: false });
+      showToast("候选池已刷新");
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`刷新候选池失败: ${message}`);
+      showToast(message);
+    }
+  }
+
+  async function changeCandidatePage(nextPage) {
+    try {
+      await syncCandidatePool({ silent: false, withLog: false, page: nextPage });
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`切换候选分页失败: ${message}`);
+      showToast(message);
+    }
+  }
+
+  async function changeCandidatePageSize(nextPageSize) {
+    try {
+      await syncCandidatePool({ silent: false, withLog: false, page: 1, pageSize: nextPageSize });
+    } catch (error) {
+      const message = formatRequestError(error);
+      pushLog(`更新候选每页条数失败: ${message}`);
       showToast(message);
     }
   }
@@ -1067,6 +1172,20 @@ function App() {
           </div>
 
           <div className="panel panel--span">
+            <div className="panel-header panel-header--compact">
+              <div>
+                <p className="section-kicker">追踪列表</p>
+                <h3>已追踪博主</h3>
+              </div>
+              <PaginationControls
+                page={paginatedCreators.page}
+                pageSize={paginatedCreators.pageSize}
+                total={paginatedCreators.total}
+                totalPages={paginatedCreators.totalPages}
+                onPageChange={(page) => updateLocalPager("creators", { page })}
+                onPageSizeChange={(pageSize) => updateLocalPager("creators", { page: 1, pageSize })}
+              />
+            </div>
             <div className="table-header">
               <span>UID</span>
               <span>名称</span>
@@ -1075,7 +1194,7 @@ function App() {
               <span>操作</span>
             </div>
             <div className="table-body" data-testid="creator-list">
-              {state.creators.map((creator) => (
+              {paginatedCreators.items.map((creator) => (
                 <div className="table-row" key={creator.id}>
                   <span>{creator.uid || "-"}</span>
                   <span>{creator.name || "-"}</span>
@@ -1117,7 +1236,7 @@ function App() {
               <button
                 type="button"
                 className="secondary-button"
-                onClick={() => void syncCandidatePool({ silent: false })}
+                onClick={() => void handleCandidateRefresh()}
                 disabled={candidateLoading}
               >
                 {candidateLoading ? "刷新中..." : "刷新候选"}
@@ -1218,6 +1337,16 @@ function App() {
                 <p className="panel-note">当前没有候选，请先触发一次发现任务，或调整筛选条件。</p>
               )}
             </div>
+
+            <PaginationControls
+              page={candidatePagination.page}
+              pageSize={candidatePagination.pageSize}
+              total={candidatePagination.total}
+              totalPages={candidatePagination.totalPages}
+              disabled={candidateLoading}
+              onPageChange={(page) => void changeCandidatePage(page)}
+              onPageSizeChange={(pageSize) => void changeCandidatePageSize(pageSize)}
+            />
           </div>
         </section>
 
@@ -1249,9 +1378,18 @@ function App() {
               <DetailStat label="运行中" value={taskDiagnostics.runningCount} />
               <DetailStat label="失败任务" value={taskDiagnostics.failedCount} tone="danger" />
             </div>
+            <PaginationControls
+              page={paginatedJobs.page}
+              pageSize={paginatedJobs.pageSize}
+              total={paginatedJobs.total}
+              totalPages={paginatedJobs.totalPages}
+              onPageChange={(page) => updateLocalPager("jobs", { page })}
+              onPageSizeChange={(pageSize) => updateLocalPager("jobs", { page: 1, pageSize })}
+              className="pagination-controls--top"
+            />
             <div className="stack-list" style={{ marginTop: 16 }} data-testid="job-list">
-              {state.jobs.length > 0 ? (
-                state.jobs.slice(0, 6).map((job) => (
+              {paginatedJobs.items.length > 0 ? (
+                paginatedJobs.items.map((job) => (
                   <button
                     type="button"
                     className={job.id === selectedJob?.id ? "stack-select stack-select--active" : "stack-select"}
@@ -1331,10 +1469,18 @@ function App() {
                 <p className="section-kicker">最新视频</p>
                 <h3>最近视频</h3>
               </div>
+              <PaginationControls
+                page={paginatedVideos.page}
+                pageSize={paginatedVideos.pageSize}
+                total={paginatedVideos.total}
+                totalPages={paginatedVideos.totalPages}
+                onPageChange={(page) => updateLocalPager("videos", { page })}
+                onPageSizeChange={(pageSize) => updateLocalPager("videos", { page: 1, pageSize })}
+              />
             </div>
             <div className="stack-list">
-              {state.videos.length > 0 ? (
-                state.videos.slice(0, 6).map((video) => (
+              {paginatedVideos.items.length > 0 ? (
+                paginatedVideos.items.map((video) => (
                   <div className="stack-row" key={video.id}>
                     <div>
                       <div className="row-title">{video.title || video.videoId || `视频 #${video.id}`}</div>
@@ -1649,7 +1795,7 @@ function App() {
                 <div className="detail-grid candidate-detail-grid">
                   <DetailItem label="UID" value={selectedCandidate.uid || "-"} />
                   <DetailItem label="平台" value={selectedCandidate.platform || "bilibili"} />
-                  <DetailItem label="粉丝量" value={formatCount(selectedCandidate.followerCount)} />
+                  <DetailItem label="粉丝量" value={formatFollowerCount(selectedCandidate.followerCount)} />
                   <DetailItem label="当前分数" value={`${selectedCandidate.score || 0} 分`} />
                   <DetailItem label="审核状态" value={reviewStatusText(selectedCandidate.status)} />
                   <DetailItem label="最近发现" value={formatDateTime(selectedCandidate.lastDiscoveredAt)} />
@@ -1799,6 +1945,66 @@ function DetailItem({ label, value }) {
   );
 }
 
+function PaginationControls({
+  page,
+  pageSize,
+  total,
+  totalPages,
+  disabled = false,
+  onPageChange,
+  onPageSizeChange,
+  className = ""
+}) {
+  const currentPage = normalizePositiveInteger(page, 1);
+  const currentPageSize = normalizePositiveInteger(pageSize, PAGE_SIZE_OPTIONS[0]);
+  const pageCount = Math.max(1, normalizePositiveInteger(totalPages, 1));
+  const totalCount = Math.max(0, Number(total) || 0);
+  const rootClassName = className ? `pagination-controls ${className}` : "pagination-controls";
+
+  return (
+    <div className={rootClassName}>
+      <div className="pagination-controls__summary">
+        <span>共 {totalCount} 项</span>
+        <span>
+          第 {currentPage} / {pageCount} 页
+        </span>
+      </div>
+      <label className="pagination-controls__size">
+        <span>每页显示</span>
+        <select
+          value={currentPageSize}
+          onChange={(event) => onPageSizeChange?.(Number(event.target.value) || currentPageSize)}
+          disabled={disabled}
+        >
+          {PAGE_SIZE_OPTIONS.map((option) => (
+            <option key={`page-size-${option}`} value={option}>
+              {option} 条
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="pagination-controls__actions">
+        <button
+          type="button"
+          className="ghost-link pagination-controls__button"
+          onClick={() => onPageChange?.(currentPage - 1)}
+          disabled={disabled || currentPage <= 1}
+        >
+          上一页
+        </button>
+        <button
+          type="button"
+          className="ghost-link pagination-controls__button"
+          onClick={() => onPageChange?.(currentPage + 1)}
+          disabled={disabled || currentPage >= pageCount}
+        >
+          下一页
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function StatusBadge({ status }) {
   return <span className={`status-badge status-badge--${statusTone(status)}`}>{statusText(status)}</span>;
 }
@@ -1866,7 +2072,7 @@ function CandidateRow({ candidate, busyAction, onView, onApprove, onIgnore, onBl
           <span className="candidate-row__uid">UID {candidate.uid || "-"}</span>
         </div>
         <div className="candidate-row__meta">
-          粉丝 {formatCount(candidate.followerCount)} · 最近发现 {formatDateTime(candidate.lastDiscoveredAt)}
+          粉丝 {formatFollowerCount(candidate.followerCount)} · 最近发现 {formatDateTime(candidate.lastDiscoveredAt)}
         </div>
         {sourceLabels.length > 0 ? (
           <div className="candidate-chip-list">
@@ -2324,6 +2530,26 @@ function formatCount(value) {
     return `${(count / 10000).toFixed(1)} 万`;
   }
   return String(count);
+}
+
+function formatFollowerCount(value) {
+  const count = Number(value) || 0;
+  if (count <= 0) {
+    return "待补全";
+  }
+  return formatCount(count);
+}
+
+function normalizePositiveInteger(value, fallback = 1) {
+  const normalized = Math.floor(Number(value));
+  if (Number.isFinite(normalized) && normalized > 0) {
+    return normalized;
+  }
+  const fallbackValue = Math.floor(Number(fallback));
+  if (Number.isFinite(fallbackValue) && fallbackValue > 0) {
+    return fallbackValue;
+  }
+  return 1;
 }
 
 function nowLabel() {

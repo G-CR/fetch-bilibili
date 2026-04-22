@@ -57,6 +57,12 @@ try {
   if (!html.includes("候选池与人工审核")) {
     throw new Error("前端未渲染候选池页面标题");
   }
+  if (!html.includes("每页显示")) {
+    throw new Error("前端未渲染分页配置控件");
+  }
+  if (!html.includes("上一页") || !html.includes("下一页")) {
+    throw new Error("前端未渲染分页切换按钮");
+  }
   if (!html.includes("手动发现")) {
     throw new Error("前端未渲染候选池发现按钮");
   }

@@ -195,6 +195,58 @@ func TestCandidateRepoList(t *testing.T) {
 	}
 }
 
+func TestCandidateRepoListOrdersByReviewPriority(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+	now := time.Now().UTC()
+	countRows := sqlmock.NewRows([]string{"count"}).AddRow(2)
+	listRows := sqlmock.NewRows([]string{
+		"id", "platform", "uid", "name", "avatar_url", "profile_url", "follower_count", "status", "score", "score_version",
+		"last_discovered_at", "last_scored_at", "approved_at", "ignored_at", "blocked_at", "created_at", "updated_at",
+	}).AddRow(
+		3, "bilibili", "9988", "审核中候选", nil, nil, 1234, "reviewing", 81, "v1",
+		now, now, nil, nil, nil, now, now,
+	).AddRow(
+		4, "bilibili", "8899", "已批准候选", nil, nil, 888, "approved", 99, "v1",
+		now, now, now, nil, nil, now, now,
+	)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM candidate_creators c")).
+		WillReturnRows(countRows)
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT c.id, c.platform, c.uid, c.name, c.avatar_url, c.profile_url, c.follower_count, c.status, c.score, c.score_version,
+			c.last_discovered_at, c.last_scored_at, c.approved_at, c.ignored_at, c.blocked_at, c.created_at, c.updated_at
+		FROM candidate_creators c
+		ORDER BY CASE c.status
+			WHEN 'reviewing' THEN 0
+			WHEN 'approved' THEN 1
+			WHEN 'ignored' THEN 2
+			WHEN 'blocked' THEN 3
+			ELSE 4
+		END, c.score DESC, c.last_discovered_at DESC, c.id DESC
+		LIMIT ? OFFSET ?
+	`)).
+		WithArgs(20, 0).
+		WillReturnRows(listRows)
+
+	items, total, err := repoImpl.Candidates().List(context.Background(), repo.CandidateListFilter{})
+	if err != nil {
+		t.Fatalf("list error: %v", err)
+	}
+	if total != 2 || len(items) != 2 || items[0].Status != "reviewing" || items[1].Status != "approved" {
+		t.Fatalf("unexpected ordered result: total=%d items=%+v", total, items)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
 func TestCandidateRepoFindByPlatformUIDMissingRecord(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

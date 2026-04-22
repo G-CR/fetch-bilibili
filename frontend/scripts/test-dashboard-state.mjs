@@ -10,7 +10,11 @@ import {
   deriveCandidateInsights,
   deriveCleanupPreview,
   deriveMetrics,
-  deriveTaskDiagnostics
+  deriveTaskDiagnostics,
+  loadState,
+  normalizePagerState,
+  paginateItems,
+  resolvePagination
 } from "../src/lib/state.js";
 
 const previous = createDefaultState();
@@ -182,6 +186,166 @@ assert.equal(defaults.creators.length, 0);
 assert.equal(defaults.videos.length, 0);
 assert.equal(defaults.jobs.length, 0);
 assert.equal(defaults.candidatePool.items.length, 0);
+assert.equal(defaults.candidatePool.filters.status, "reviewing");
+assert.equal(defaults.pagination.creators.page, 1);
+assert.equal(defaults.pagination.creators.pageSize, 6);
+assert.equal(defaults.pagination.jobs.pageSize, 6);
+assert.equal(defaults.pagination.videos.pageSize, 6);
+
+const normalizedPager = normalizePagerState({ page: 0, pageSize: -1 }, 12);
+assert.deepEqual(normalizedPager, {
+  page: 1,
+  pageSize: 12
+});
+
+const localPagination = paginateItems(
+  Array.from({ length: 9 }, (_, index) => ({ id: index + 1 })),
+  2,
+  4
+);
+assert.equal(localPagination.total, 9);
+assert.equal(localPagination.page, 2);
+assert.equal(localPagination.pageSize, 4);
+assert.equal(localPagination.totalPages, 3);
+assert.deepEqual(
+  localPagination.items.map((item) => item.id),
+  [5, 6, 7, 8]
+);
+
+const clampedPagination = resolvePagination(3, 9, 2);
+assert.equal(clampedPagination.page, 2);
+assert.equal(clampedPagination.totalPages, 2);
+assert.equal(clampedPagination.startIndex, 2);
+assert.equal(clampedPagination.endIndex, 3);
+
+const originalWindow = globalThis.window;
+const storageFixtures = [
+  {
+    name: "legacy invalid page size",
+    payload: {
+      apiBase: "http://localhost:8080",
+      candidatePool: {
+        items: Array.from({ length: 30 }, (_, index) => ({
+          id: index + 1,
+          uid: `uid-${index + 1}`,
+          name: `候选 ${index + 1}`
+        })),
+        total: 30,
+        page: 1,
+        pageSize: 100,
+        filters: {
+          status: "",
+          minScore: 0,
+          keyword: ""
+        }
+      }
+    },
+    expectedPage: 1,
+    expectedPageSize: 6,
+    expectedItemCount: 6,
+    expectedFilterStatus: "reviewing"
+  },
+  {
+    name: "legacy supported page size should still migrate to new default",
+    payload: {
+      apiBase: "http://localhost:8080",
+      candidatePool: {
+        items: Array.from({ length: 30 }, (_, index) => ({
+          id: index + 1,
+          uid: `legacy-${index + 1}`,
+          name: `旧候选 ${index + 1}`
+        })),
+        total: 30,
+        page: 3,
+        pageSize: 20,
+        filters: {
+          status: "",
+          minScore: 0,
+          keyword: ""
+        }
+      }
+    },
+    expectedPage: 1,
+    expectedPageSize: 6,
+    expectedItemCount: 6,
+    expectedFilterStatus: "reviewing"
+  },
+  {
+    name: "v4 cache should migrate candidate queue defaults",
+    payload: {
+      storageVersion: 4,
+      apiBase: "http://localhost:8080",
+      candidatePool: {
+        items: Array.from({ length: 20 }, (_, index) => ({
+          id: index + 1,
+          uid: `v4-${index + 1}`,
+          name: `v4 候选 ${index + 1}`
+        })),
+        total: 20,
+        page: 2,
+        pageSize: 20,
+        filters: {
+          status: "",
+          minScore: 0,
+          keyword: ""
+        }
+      }
+    },
+    expectedPage: 1,
+    expectedPageSize: 6,
+    expectedItemCount: 6,
+    expectedFilterStatus: "reviewing"
+  },
+  {
+    name: "current version should preserve user page size",
+    payload: {
+      storageVersion: 5,
+      apiBase: "http://localhost:8080",
+      candidatePool: {
+        items: Array.from({ length: 20 }, (_, index) => ({
+          id: index + 1,
+          uid: `current-${index + 1}`,
+          name: `现候选 ${index + 1}`
+        })),
+        total: 20,
+        page: 2,
+        pageSize: 20,
+        filters: {
+          status: "",
+          minScore: 0,
+          keyword: ""
+        }
+      }
+    },
+    expectedPage: 2,
+    expectedPageSize: 20,
+    expectedItemCount: 20,
+    expectedFilterStatus: ""
+  }
+];
+
+for (const fixture of storageFixtures) {
+  globalThis.window = {
+    localStorage: {
+      getItem() {
+        return JSON.stringify(fixture.payload);
+      }
+    }
+  };
+
+  const loadedState = loadState();
+  assert.equal(loadedState.candidatePool.page, fixture.expectedPage, fixture.name);
+  assert.equal(loadedState.candidatePool.pageSize, fixture.expectedPageSize, fixture.name);
+  assert.equal(loadedState.candidatePool.items.length, fixture.expectedItemCount, fixture.name);
+  assert.equal(loadedState.candidatePool.total, fixture.payload.candidatePool.total, fixture.name);
+  assert.equal(loadedState.candidatePool.filters.status, fixture.expectedFilterStatus, fixture.name);
+}
+
+if (originalWindow === undefined) {
+  delete globalThis.window;
+} else {
+  globalThis.window = originalWindow;
+}
 
 const liveBase = applyRemoteSnapshot(createDefaultState(), {
   creators: [{ id: 1, uid: "1001", name: "旧博主", platform: "bilibili", status: "active" }],

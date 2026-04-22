@@ -1,5 +1,7 @@
 const DEFAULT_TIMEOUT = 5000;
 const DEFAULT_STREAM_RECONNECT_DELAY = 1000;
+const DASHBOARD_JOB_LIMIT = 100;
+const DASHBOARD_VIDEO_LIMIT = 100;
 
 async function request(baseURL, path, options = {}) {
   const controller = new AbortController();
@@ -83,7 +85,7 @@ export async function listCandidateCreators(baseURL, filters = {}) {
     items: Array.isArray(payload?.items) ? payload.items : [],
     total: Number(payload?.total) || 0,
     page: Number(payload?.page) || 1,
-    page_size: Number(payload?.page_size) || Number(filters?.page_size) || 20
+    page_size: Number(payload?.page_size) || Number(filters?.page_size) || 6
   };
 }
 
@@ -151,8 +153,8 @@ export async function updateSystemConfig(baseURL, content) {
 export async function loadDashboardSnapshot(baseURL) {
   const [creators, jobs, videos, system, storage] = await Promise.all([
     listCreators(baseURL),
-    listJobs(baseURL, { limit: 12 }),
-    listVideos(baseURL, { limit: 8 }),
+    listJobs(baseURL, { limit: DASHBOARD_JOB_LIMIT }),
+    listVideos(baseURL, { limit: DASHBOARD_VIDEO_LIMIT }),
     getSystemStatus(baseURL),
     getStorageStats(baseURL)
   ]);

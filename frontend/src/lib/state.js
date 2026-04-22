@@ -1,7 +1,14 @@
 const STORAGE_KEY = "bili-vault-dashboard-v3";
+const DEFAULT_LIST_PAGE_SIZE = 6;
+const DEFAULT_CANDIDATE_PAGE_SIZE = 6;
+const SUPPORTED_PAGE_SIZES = [6, 12, 20, 50];
+const STORAGE_SCHEMA_VERSION = 5;
+const CANDIDATE_PAGE_MIGRATION_VERSION = 5;
+const CANDIDATE_FILTER_MIGRATION_VERSION = 5;
 
 export function createDefaultState() {
   return {
+    storageVersion: STORAGE_SCHEMA_VERSION,
     apiBase: "http://localhost:8080",
     connection: {
       status: "connecting",
@@ -12,14 +19,15 @@ export function createDefaultState() {
     creators: [],
     videos: [],
     jobs: [],
+    pagination: createDefaultPaginationState(),
     candidatePool: {
       items: [],
       total: 0,
       page: 1,
-      pageSize: 20,
+      pageSize: DEFAULT_CANDIDATE_PAGE_SIZE,
       lastSyncAt: "未同步",
       filters: {
-        status: "",
+        status: "reviewing",
         minScore: 0,
         keyword: ""
       },
@@ -98,11 +106,15 @@ export function loadState() {
       return defaults;
     }
     const parsed = JSON.parse(raw);
+    const parsedVersion = Math.max(0, Math.floor(numberOr(parsed?.storageVersion, 0)));
     const { mode: _legacyMode, ...rest } = parsed || {};
     const isLegacyLocalMode = parsed?.mode === "local";
+    const shouldResetCandidatePaging = parsedVersion < CANDIDATE_PAGE_MIGRATION_VERSION;
+    const shouldResetCandidateFilter = parsedVersion < CANDIDATE_FILTER_MIGRATION_VERSION;
     return {
       ...defaults,
       ...rest,
+      storageVersion: STORAGE_SCHEMA_VERSION,
       connection: {
         ...defaults.connection,
         ...(parsed?.connection || {})
@@ -110,22 +122,12 @@ export function loadState() {
       creators: isLegacyLocalMode ? defaults.creators : Array.isArray(parsed?.creators) ? parsed.creators : defaults.creators,
       videos: isLegacyLocalMode ? defaults.videos : Array.isArray(parsed?.videos) ? parsed.videos : defaults.videos,
       jobs: isLegacyLocalMode ? defaults.jobs : Array.isArray(parsed?.jobs) ? parsed.jobs : defaults.jobs,
-      candidatePool: {
-        ...defaults.candidatePool,
-        ...(parsed?.candidatePool || {}),
-        items:
-          isLegacyLocalMode || !Array.isArray(parsed?.candidatePool?.items)
-            ? defaults.candidatePool.items
-            : parsed.candidatePool.items,
-        filters: {
-          ...defaults.candidatePool.filters,
-          ...(parsed?.candidatePool?.filters || {})
-        },
-        detail:
-          parsed?.candidatePool?.detail && typeof parsed.candidatePool.detail === "object"
-            ? parsed.candidatePool.detail
-            : defaults.candidatePool.detail
-      },
+      pagination: normalizePaginationState(parsed?.pagination),
+      candidatePool: normalizeCandidatePoolState(parsed?.candidatePool, defaults.candidatePool, {
+        resetItems: isLegacyLocalMode,
+        forceDefaultPageSize: shouldResetCandidatePaging,
+        forceDefaultFilterStatus: shouldResetCandidateFilter
+      }),
       logs: isLegacyLocalMode ? defaults.logs : Array.isArray(parsed?.logs) ? parsed.logs : defaults.logs,
       storage: {
         ...defaults.storage,
@@ -346,7 +348,7 @@ export function applyCandidateListSnapshot(previous, payload, lastSyncAt = forma
       items,
       total: numberOr(payload?.total, items.length),
       page: numberOr(payload?.page, safePrevious?.candidatePool?.page, 1),
-      pageSize: numberOr(payload?.page_size, safePrevious?.candidatePool?.pageSize, 20),
+      pageSize: numberOr(payload?.page_size, safePrevious?.candidatePool?.pageSize, DEFAULT_CANDIDATE_PAGE_SIZE),
       lastSyncAt,
       detail: nextDetail
     }
@@ -402,6 +404,38 @@ export function applyCandidateReviewAction(previous, candidateID, nextStatus, ac
       items: nextItems,
       detail: nextDetail
     }
+  };
+}
+
+export function normalizePagerState(pager, defaultPageSize = DEFAULT_LIST_PAGE_SIZE) {
+  const { page, pageSize } = resolvePagination(0, pager?.page, pager?.pageSize, defaultPageSize);
+  return { page, pageSize };
+}
+
+export function resolvePagination(totalItems, page, pageSize, defaultPageSize = DEFAULT_LIST_PAGE_SIZE) {
+  const total = Math.max(0, Math.floor(numberOr(totalItems, 0)));
+  const safePageSize = clampPositiveInteger(pageSize, defaultPageSize);
+  const totalPages = Math.max(1, Math.ceil(total / safePageSize) || 1);
+  const safePage = Math.min(clampPositiveInteger(page, 1), totalPages);
+  const startIndex = Math.min((safePage - 1) * safePageSize, total);
+  const endIndex = Math.min(startIndex + safePageSize, total);
+
+  return {
+    total,
+    page: safePage,
+    pageSize: safePageSize,
+    totalPages,
+    startIndex,
+    endIndex
+  };
+}
+
+export function paginateItems(items, page, pageSize, defaultPageSize = DEFAULT_LIST_PAGE_SIZE) {
+  const source = Array.isArray(items) ? items : [];
+  const pagination = resolvePagination(source.length, page, pageSize, defaultPageSize);
+  return {
+    ...pagination,
+    items: source.slice(pagination.startIndex, pagination.endIndex)
   };
 }
 
@@ -1087,6 +1121,77 @@ function normalizeStructuredDetail(value) {
   return {
     raw: String(value)
   };
+}
+
+function createDefaultPaginationState() {
+  return {
+    creators: createPagerState(DEFAULT_LIST_PAGE_SIZE),
+    jobs: createPagerState(DEFAULT_LIST_PAGE_SIZE),
+    videos: createPagerState(DEFAULT_LIST_PAGE_SIZE)
+  };
+}
+
+function normalizeCandidatePoolState(value, defaults, options = {}) {
+  const resetItems = Boolean(options?.resetItems);
+  const forceDefaultPageSize = Boolean(options?.forceDefaultPageSize);
+  const forceDefaultFilterStatus = Boolean(options?.forceDefaultFilterStatus);
+  const pageSize = normalizeSupportedPageSize(value?.pageSize, defaults.pageSize);
+  const effectivePageSize = forceDefaultPageSize ? defaults.pageSize : pageSize;
+  const currentStatus = String(value?.filters?.status || "").trim();
+  const effectiveStatus = forceDefaultFilterStatus && currentStatus === "" ? defaults.filters.status : currentStatus;
+  const items =
+    resetItems || !Array.isArray(value?.items)
+      ? defaults.items
+      : value.items.slice(0, effectivePageSize);
+  const shouldResetPage = forceDefaultPageSize || (forceDefaultFilterStatus && currentStatus === "");
+
+  return {
+    ...defaults,
+    ...(value || {}),
+    items,
+    filters: {
+      ...defaults.filters,
+      ...(value?.filters || {}),
+      status: effectiveStatus
+    },
+    page: shouldResetPage ? defaults.page : clampPositiveInteger(value?.page, defaults.page),
+    pageSize: effectivePageSize,
+    detail: value?.detail && typeof value.detail === "object" ? value.detail : defaults.detail
+  };
+}
+
+function normalizePaginationState(value) {
+  return {
+    creators: normalizePagerState(value?.creators, DEFAULT_LIST_PAGE_SIZE),
+    jobs: normalizePagerState(value?.jobs, DEFAULT_LIST_PAGE_SIZE),
+    videos: normalizePagerState(value?.videos, DEFAULT_LIST_PAGE_SIZE)
+  };
+}
+
+function createPagerState(defaultPageSize) {
+  return normalizePagerState({ page: 1, pageSize: defaultPageSize }, defaultPageSize);
+}
+
+function normalizeSupportedPageSize(value, fallback) {
+  const normalized = clampPositiveInteger(value, fallback);
+  if (SUPPORTED_PAGE_SIZES.includes(normalized)) {
+    return normalized;
+  }
+  return clampPositiveInteger(fallback, DEFAULT_CANDIDATE_PAGE_SIZE);
+}
+
+function clampPositiveInteger(value, fallback) {
+  const normalized = Math.floor(Number(value));
+  if (Number.isFinite(normalized) && normalized > 0) {
+    return normalized;
+  }
+
+  const fallbackValue = Math.floor(Number(fallback));
+  if (Number.isFinite(fallbackValue) && fallbackValue > 0) {
+    return fallbackValue;
+  }
+
+  return 1;
 }
 
 function isDateWithinRange(value, start, end) {

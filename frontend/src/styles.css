@@ -371,6 +371,10 @@ button {
   margin-bottom: 16px;
 }
 
+.panel-header--compact {
+  align-items: center;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -1094,6 +1098,71 @@ textarea {
   align-items: center;
 }
 
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 14px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.panel-header > .pagination-controls {
+  margin-top: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.pagination-controls__summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--text-dim);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
+
+.pagination-controls__size {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-dim);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
+
+.pagination-controls__size select {
+  min-width: 112px;
+  width: auto;
+  min-height: 36px;
+}
+
+.pagination-controls__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pagination-controls__button {
+  min-height: 36px;
+}
+
+.pagination-controls__button:disabled,
+.pagination-controls__size select:disabled {
+  opacity: 0.44;
+  cursor: not-allowed;
+}
+
+.pagination-controls--top {
+  margin-top: 16px;
+}
+
 .table-header {
   padding: 0 12px 10px;
   color: var(--text-dim);
@@ -1243,6 +1312,17 @@ textarea {
     justify-content: flex-start;
   }
 
+  .panel-header--compact,
+  .panel-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .panel-header > .pagination-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .config-status {
     flex-direction: column;
   }
@@ -1269,6 +1349,32 @@ textarea {
 
   .command-bar h2 {
     font-size: 24px;
+  }
+
+  .pagination-controls,
+  .panel-header > .pagination-controls {
+    align-items: stretch;
+  }
+
+  .pagination-controls__summary,
+  .pagination-controls__actions {
+    justify-content: space-between;
+  }
+
+  .pagination-controls__actions {
+    width: 100%;
+  }
+
+  .pagination-controls__button {
+    flex: 1 1 0;
+  }
+
+  .pagination-controls__size {
+    width: 100%;
+  }
+
+  .pagination-controls__size select {
+    width: 100%;
   }
 
   .candidate-drawer__panel {

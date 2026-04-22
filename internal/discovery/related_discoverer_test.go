@@ -69,11 +69,18 @@ func (s *relatedCreatorRepoStub) CountActive(ctx context.Context) (int64, error)
 }
 
 type relatedSourceClientStub struct {
+	creatorHits        map[discoverySearchKey][]bilibili.CreatorHit
 	videosByUID        map[string][]bilibili.VideoMeta
 	searchByKeyword    map[string][]bilibili.VideoHit
 	searchErrByKeyword map[string]error
+	creatorCalls       []discoverySearchKey
 	listCalls          []string
 	searchCalls        []string
+}
+
+func (s *relatedSourceClientStub) SearchCreators(ctx context.Context, keyword string, page, pageSize int) ([]bilibili.CreatorHit, error) {
+	s.creatorCalls = append(s.creatorCalls, discoverySearchKey{keyword: keyword, page: page})
+	return append([]bilibili.CreatorHit(nil), s.creatorHits[discoverySearchKey{keyword: keyword, page: page}]...), nil
 }
 
 func (s *relatedSourceClientStub) ListVideos(ctx context.Context, uid string) ([]bilibili.VideoMeta, error) {
@@ -265,5 +272,54 @@ func TestRelatedDiscovererSkipsRiskBlockedKeywordAndContinues(t *testing.T) {
 	}
 	if len(client.searchCalls) != 2 || client.searchCalls[0] != "哲学进阶" || client.searchCalls[1] != "补档" {
 		t.Fatalf("expected risk keyword skipped and next keyword continued, got %+v", client.searchCalls)
+	}
+}
+
+func TestRelatedDiscovererBackfillsFollowerCountFromCreatorSearch(t *testing.T) {
+	now := time.Date(2026, 4, 21, 18, 0, 0, 0, time.UTC)
+	creators := &relatedCreatorRepoStub{
+		active: []repo.Creator{
+			{ID: 1, Platform: "bilibili", UID: "1001", Name: "源博主", Status: "active"},
+		},
+	}
+	client := &relatedSourceClientStub{
+		creatorHits: map[discoverySearchKey][]bilibili.CreatorHit{
+			{keyword: "候选甲", page: 1}: {
+				{UID: "2001", Name: "候选甲", FollowerCount: 456700, ProfileURL: "https://space.bilibili.com/2001"},
+			},
+		},
+		videosByUID: map[string][]bilibili.VideoMeta{
+			"1001": {
+				{VideoID: "BVsrc1", Title: "补档 演唱会", PublishTime: now.Add(-time.Hour)},
+			},
+		},
+		searchByKeyword: map[string][]bilibili.VideoHit{
+			"补档": {
+				{UID: "2001", CreatorName: "候选甲", VideoID: "BV2001", Title: "补档 演唱会", PublishTime: now.Add(-2 * time.Hour), ViewCount: 999},
+			},
+		},
+	}
+	candidates := &candidateDiscoveryRepoStub{nextID: 30}
+	cfg := config.Default().Discovery
+	cfg.Keywords = []string{"补档"}
+
+	discoverer := NewRelatedDiscoverer(creators, candidates, client, NewScorer(cfg), cfg)
+	discoverer.now = func() time.Time { return now }
+
+	result, err := discoverer.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	if result.Discovered != 1 {
+		t.Fatalf("expected discovered=1, got %+v", result)
+	}
+	if len(candidates.upserts) != 1 {
+		t.Fatalf("expected 1 upsert, got %+v", candidates.upserts)
+	}
+	if candidates.upserts[0].FollowerCount != 456700 {
+		t.Fatalf("expected follower count backfilled, got %+v", candidates.upserts[0])
+	}
+	if len(client.creatorCalls) != 1 || client.creatorCalls[0] != (discoverySearchKey{keyword: "候选甲", page: 1}) {
+		t.Fatalf("expected creator search called with candidate name, got %+v", client.creatorCalls)
 	}
 }

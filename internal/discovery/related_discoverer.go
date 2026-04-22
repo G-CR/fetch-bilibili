@@ -20,6 +20,7 @@ const defaultRelatedCreatorLimit = 200
 type RelatedSourceClient interface {
 	ListVideos(ctx context.Context, uid string) ([]bilibili.VideoMeta, error)
 	SearchRelatedVideos(ctx context.Context, keyword string, page, pageSize int) ([]bilibili.VideoHit, error)
+	SearchCreators(ctx context.Context, keyword string, page, pageSize int) ([]bilibili.CreatorHit, error)
 }
 
 type RelatedDiscoverResult struct {
@@ -66,6 +67,7 @@ type relatedCandidateAggregate struct {
 	uid              string
 	existing         relatedCandidateLookup
 	bestHit          relatedCandidateHit
+	creator          bilibili.CreatorHit
 	sourceOrder      []string
 	sourcesByCreator map[string]*relatedSourceEntry
 }
@@ -104,6 +106,7 @@ func (d *RelatedDiscoverer) Discover(ctx context.Context) (RelatedDiscoverResult
 
 	now := d.now().UTC()
 	existingCache := make(map[string]relatedCandidateLookup)
+	creatorCache := make(map[string]bilibili.CreatorHit)
 	aggregates := make(map[string]*relatedCandidateAggregate)
 	order := make([]string, 0)
 	skippedBlocked := make(map[string]struct{})
@@ -145,6 +148,7 @@ func (d *RelatedDiscoverer) Discover(ctx context.Context) (RelatedDiscoverResult
 		if agg == nil {
 			continue
 		}
+		agg.enrichCreator(ctx, d.client, creatorCache)
 		candidate := agg.buildCandidate(now, d.cfg.ScoreVersion)
 		scoreDetails := agg.buildScoreDetails(d.scorer)
 		candidate.Score = sumScoreDetails(scoreDetails)
@@ -284,6 +288,13 @@ func (a *relatedCandidateAggregate) merge(hit relatedCandidateHit) {
 	if compareRelatedHit(hit, a.bestHit) < 0 {
 		a.bestHit = hit
 	}
+	if strings.TrimSpace(a.creator.UID) == "" {
+		a.creator = bilibili.CreatorHit{
+			UID:        strings.TrimSpace(hit.candidate.UID),
+			Name:       strings.TrimSpace(hit.candidate.CreatorName),
+			ProfileURL: profileURLForUID(hit.candidate.UID),
+		}
+	}
 	sourceUID := strings.TrimSpace(hit.sourceCreator.UID)
 	entry := a.sourcesByCreator[sourceUID]
 	if entry == nil {
@@ -307,9 +318,10 @@ func (a *relatedCandidateAggregate) buildCandidate(now time.Time, scoreVersion s
 		ID:               a.existing.candidate.ID,
 		Platform:         "bilibili",
 		UID:              a.uid,
-		Name:             strings.TrimSpace(a.bestHit.candidate.CreatorName),
-		ProfileURL:       profileURLForUID(a.uid),
-		FollowerCount:    a.existing.candidate.FollowerCount,
+		Name:             firstNonEmptyString(a.creator.Name, a.bestHit.candidate.CreatorName),
+		AvatarURL:        strings.TrimSpace(a.creator.AvatarURL),
+		ProfileURL:       firstNonEmptyString(a.creator.ProfileURL, profileURLForUID(a.uid)),
+		FollowerCount:    maxInt64(a.creator.FollowerCount, a.existing.candidate.FollowerCount),
 		Status:           "reviewing",
 		ScoreVersion:     scoreVersion,
 		LastDiscoveredAt: now,
@@ -325,11 +337,45 @@ func (a *relatedCandidateAggregate) buildCandidate(now time.Time, scoreVersion s
 		if candidate.Name == "" {
 			candidate.Name = a.existing.candidate.Name
 		}
+		if candidate.AvatarURL == "" {
+			candidate.AvatarURL = a.existing.candidate.AvatarURL
+		}
 		if candidate.ProfileURL == "" {
 			candidate.ProfileURL = a.existing.candidate.ProfileURL
 		}
 	}
 	return candidate
+}
+
+func (a *relatedCandidateAggregate) enrichCreator(ctx context.Context, client RelatedSourceClient, cache map[string]bilibili.CreatorHit) {
+	if a == nil || client == nil {
+		return
+	}
+	uid := strings.TrimSpace(a.uid)
+	if uid == "" {
+		return
+	}
+	if hit, ok := cache[uid]; ok {
+		if hit.UID != "" {
+			a.creator = mergeCreatorHit(a.creator, hit)
+		}
+		return
+	}
+	for _, query := range uniqueNonEmptyStrings(a.creator.Name, a.bestHit.candidate.CreatorName, uid) {
+		hits, err := client.SearchCreators(ctx, query, 1, 10)
+		if err != nil {
+			continue
+		}
+		for _, hit := range hits {
+			if strings.TrimSpace(hit.UID) != uid {
+				continue
+			}
+			a.creator = mergeCreatorHit(a.creator, hit)
+			cache[uid] = hit
+			return
+		}
+	}
+	cache[uid] = a.creator
 }
 
 func (a *relatedCandidateAggregate) buildSources(candidateID int64) []repo.CandidateCreatorSource {
@@ -561,6 +607,32 @@ func similarityWeight(level string) int {
 	default:
 		return 5
 	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func uniqueNonEmptyStrings(values ...string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
 }
 
 func normalizeTitle(value string) string {
