@@ -6,14 +6,16 @@ import (
 )
 
 type Creator struct {
-	ID            int64
-	Platform      string
-	UID           string
-	Name          string
-	FollowerCount int64
-	Status        string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID              int64
+	Platform        string
+	UID             string
+	Name            string
+	FollowerCount   int64
+	LocalVideoCount int64
+	StorageBytes    int64
+	Status          string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type Video struct {

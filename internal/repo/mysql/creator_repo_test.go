@@ -204,11 +204,14 @@ func TestCreatorListActive(t *testing.T) {
 
 	created := time.Now().Add(-time.Hour)
 	updated := time.Now()
-	rows := sqlmock.NewRows([]string{"id", "platform", "uid", "name", "follower_count", "status", "created_at", "updated_at"}).
-		AddRow(1, "bilibili", "123", "name", 5, "active", created, updated).
-		AddRow(2, "bilibili", "456", nil, 0, "active", created, updated)
+	rows := sqlmock.NewRows([]string{
+		"id", "platform", "uid", "name", "follower_count", "status",
+		"local_video_count", "storage_bytes", "created_at", "updated_at",
+	}).
+		AddRow(1, "bilibili", "123", "name", 5, "active", 3, 2048, created, updated).
+		AddRow(2, "bilibili", "456", nil, 0, "active", 0, 0, created, updated)
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, platform, uid")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.id, c.platform, c.uid")).
 		WithArgs(2).
 		WillReturnRows(rows)
 
@@ -219,8 +222,14 @@ func TestCreatorListActive(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("expected 2 creators")
 	}
+	if list[0].LocalVideoCount != 3 || list[0].StorageBytes != 2048 {
+		t.Fatalf("expected stats for first creator, got %+v", list[0])
+	}
 	if list[1].Name != "" {
 		t.Fatalf("expected empty name for null")
+	}
+	if list[1].LocalVideoCount != 0 || list[1].StorageBytes != 0 {
+		t.Fatalf("expected zero stats for second creator, got %+v", list[1])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -297,7 +306,7 @@ func TestCreatorListActiveQueryError(t *testing.T) {
 
 	repoImpl := New(db)
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, platform, uid")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.id, c.platform, c.uid")).
 		WithArgs(1).
 		WillReturnError(sql.ErrConnDone)
 
@@ -341,8 +350,11 @@ func TestCreatorListActiveDefaultLimit(t *testing.T) {
 
 	repoImpl := New(db)
 
-	rows := sqlmock.NewRows([]string{"id", "platform", "uid", "name", "follower_count", "status", "created_at", "updated_at"})
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, platform, uid")).
+	rows := sqlmock.NewRows([]string{
+		"id", "platform", "uid", "name", "follower_count", "status",
+		"local_video_count", "storage_bytes", "created_at", "updated_at",
+	})
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.id, c.platform, c.uid")).
 		WithArgs(50).
 		WillReturnRows(rows)
 

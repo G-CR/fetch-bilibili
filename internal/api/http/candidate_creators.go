@@ -258,11 +258,13 @@ func (h *candidateItemHandler) handleApprove(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, createCreatorResponse{
-		ID:       creator.ID,
-		UID:      creator.UID,
-		Name:     creator.Name,
-		Platform: creator.Platform,
-		Status:   creator.Status,
+		ID:              creator.ID,
+		UID:             creator.UID,
+		Name:            creator.Name,
+		Platform:        creator.Platform,
+		Status:          creator.Status,
+		LocalVideoCount: creator.LocalVideoCount,
+		StorageBytes:    creator.StorageBytes,
 	})
 }
 

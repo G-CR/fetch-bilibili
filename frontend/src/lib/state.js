@@ -561,7 +561,9 @@ function normalizeCreators(items) {
     uid: stringOr(item?.uid, ""),
     name: stringOr(item?.name, ""),
     platform: stringOr(item?.platform, "bilibili"),
-    status: stringOr(item?.status, "active")
+    status: stringOr(item?.status, "active"),
+    localVideoCount: numberOr(item?.local_video_count, item?.localVideoCount, 0),
+    storageBytes: numberOr(item?.storage_bytes, item?.storageBytes, 0)
   }));
 }
 

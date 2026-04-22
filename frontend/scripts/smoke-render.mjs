@@ -48,6 +48,12 @@ try {
   if (!html.includes("添加博主")) {
     throw new Error("前端未渲染博主管理表单");
   }
+  if (!html.includes("本地视频")) {
+    throw new Error("前端未渲染博主本地视频列");
+  }
+  if (!html.includes("占用空间")) {
+    throw new Error("前端未渲染博主占用空间列");
+  }
   if (!html.includes("前端连接设置")) {
     throw new Error("前端未渲染连接设置面板");
   }

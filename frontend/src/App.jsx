@@ -1190,6 +1190,8 @@ function App() {
               <span>UID</span>
               <span>名称</span>
               <span>平台</span>
+              <span>本地视频</span>
+              <span>占用空间</span>
               <span>状态</span>
               <span>操作</span>
             </div>
@@ -1199,6 +1201,8 @@ function App() {
                   <span>{creator.uid || "-"}</span>
                   <span>{creator.name || "-"}</span>
                   <span>{creator.platform}</span>
+                  <span>{creator.localVideoCount}</span>
+                  <span>{formatBytes(creator.storageBytes)}</span>
                   <span>{creator.status}</span>
                   <span className="row-actions">
                     <button

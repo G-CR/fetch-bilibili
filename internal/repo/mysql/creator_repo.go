@@ -154,10 +154,16 @@ func (r *creatorRepo) ListActive(ctx context.Context, limit int) ([]repo.Creator
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, platform, uid, name, follower_count, status, created_at, updated_at
-		FROM creators
-		WHERE status = 'active'
-		ORDER BY id ASC
+		SELECT c.id, c.platform, c.uid, c.name, c.follower_count, c.status,
+			COUNT(DISTINCT vf.video_id) AS local_video_count,
+			COALESCE(SUM(vf.size_bytes), 0) AS storage_bytes,
+			c.created_at, c.updated_at
+		FROM creators c
+		LEFT JOIN videos v ON v.creator_id = c.id
+		LEFT JOIN video_files vf ON vf.video_id = v.id AND vf.type = 'video'
+		WHERE c.status = 'active'
+		GROUP BY c.id, c.platform, c.uid, c.name, c.follower_count, c.status, c.created_at, c.updated_at
+		ORDER BY c.id ASC
 		LIMIT ?
 	`, limit)
 	if err != nil {
@@ -170,7 +176,18 @@ func (r *creatorRepo) ListActive(ctx context.Context, limit int) ([]repo.Creator
 		var c repo.Creator
 		var name sql.NullString
 		var createdAt, updatedAt time.Time
-		if err := rows.Scan(&c.ID, &c.Platform, &c.UID, &name, &c.FollowerCount, &c.Status, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(
+			&c.ID,
+			&c.Platform,
+			&c.UID,
+			&name,
+			&c.FollowerCount,
+			&c.Status,
+			&c.LocalVideoCount,
+			&c.StorageBytes,
+			&createdAt,
+			&updatedAt,
+		); err != nil {
 			return nil, err
 		}
 		if name.Valid {

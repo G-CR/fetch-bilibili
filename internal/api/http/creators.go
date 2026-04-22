@@ -24,11 +24,13 @@ type createCreatorRequest struct {
 }
 
 type createCreatorResponse struct {
-	ID       int64  `json:"id"`
-	UID      string `json:"uid"`
-	Name     string `json:"name"`
-	Platform string `json:"platform"`
-	Status   string `json:"status"`
+	ID              int64  `json:"id"`
+	UID             string `json:"uid"`
+	Name            string `json:"name"`
+	Platform        string `json:"platform"`
+	Status          string `json:"status"`
+	LocalVideoCount int64  `json:"local_video_count"`
+	StorageBytes    int64  `json:"storage_bytes"`
 }
 
 type errorResponse struct {
@@ -78,11 +80,13 @@ func (h *creatorHandler) handleList(w http.ResponseWriter, r *http.Request) {
 	items := make([]createCreatorResponse, 0, len(creators))
 	for _, c := range creators {
 		items = append(items, createCreatorResponse{
-			ID:       c.ID,
-			UID:      c.UID,
-			Name:     c.Name,
-			Platform: c.Platform,
-			Status:   c.Status,
+			ID:              c.ID,
+			UID:             c.UID,
+			Name:            c.Name,
+			Platform:        c.Platform,
+			Status:          c.Status,
+			LocalVideoCount: c.LocalVideoCount,
+			StorageBytes:    c.StorageBytes,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -119,11 +123,13 @@ func (h *creatorHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := createCreatorResponse{
-		ID:       created.ID,
-		UID:      created.UID,
-		Name:     created.Name,
-		Platform: created.Platform,
-		Status:   created.Status,
+		ID:              created.ID,
+		UID:             created.UID,
+		Name:            created.Name,
+		Platform:        created.Platform,
+		Status:          created.Status,
+		LocalVideoCount: created.LocalVideoCount,
+		StorageBytes:    created.StorageBytes,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -186,11 +192,13 @@ func newCreatorItemHandler(service CreatorService) http.Handler {
 		}
 
 		writeJSON(w, http.StatusOK, createCreatorResponse{
-			ID:       updated.ID,
-			UID:      updated.UID,
-			Name:     updated.Name,
-			Platform: updated.Platform,
-			Status:   updated.Status,
+			ID:              updated.ID,
+			UID:             updated.UID,
+			Name:            updated.Name,
+			Platform:        updated.Platform,
+			Status:          updated.Status,
+			LocalVideoCount: updated.LocalVideoCount,
+			StorageBytes:    updated.StorageBytes,
 		})
 	})
 }

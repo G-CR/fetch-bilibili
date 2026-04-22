@@ -21,7 +21,15 @@ const previous = createDefaultState();
 
 const next = applyRemoteSnapshot(previous, {
   creators: [
-    { id: 1, uid: "123", name: "测试 UP", platform: "bilibili", status: "active" }
+    {
+      id: 1,
+      uid: "123",
+      name: "测试 UP",
+      platform: "bilibili",
+      status: "active",
+      local_video_count: 3,
+      storage_bytes: 7340032
+    }
   ],
   jobs: [
     {
@@ -101,6 +109,8 @@ const next = applyRemoteSnapshot(previous, {
 }, "2026-04-13 20:00:00");
 
 assert.equal(next.creators.length, 1);
+assert.equal(next.creators[0].localVideoCount, 3);
+assert.equal(next.creators[0].storageBytes, 7340032);
 assert.equal(next.jobs[0].status, "running");
 assert.equal(next.jobs[0].createdAt, "2026-04-13T12:00:00Z");
 assert.equal(next.videos[0].videoId, "BV1xx411c7mD");

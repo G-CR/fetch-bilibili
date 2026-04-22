@@ -651,7 +651,15 @@ func TestCreateCreatorMethodNotAllowed(t *testing.T) {
 func TestListCreators(t *testing.T) {
 	service := &stubCreatorService{
 		list: []repo.Creator{
-			{ID: 1, UID: "1", Name: "one", Platform: "bilibili", Status: "active"},
+			{
+				ID:              1,
+				UID:             "1",
+				Name:            "one",
+				Platform:        "bilibili",
+				Status:          "active",
+				LocalVideoCount: 4,
+				StorageBytes:    4096,
+			},
 		},
 	}
 	r := newTestRouter(service, nil, nil)
@@ -668,6 +676,10 @@ func TestListCreators(t *testing.T) {
 	}
 	if len(payload["items"]) != 1 {
 		t.Fatalf("expected 1 item")
+	}
+	item := payload["items"][0]
+	if item.LocalVideoCount != 4 || item.StorageBytes != 4096 {
+		t.Fatalf("expected creator stats in response, got %+v", item)
 	}
 }
 
