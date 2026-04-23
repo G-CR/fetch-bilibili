@@ -1,130 +1,132 @@
 # 开发细则
 
-本文件是仓库级 [AGENTS.md](../AGENTS.md) 的补充细则，不再承担规范总入口角色。
+本文件是仓库级 `AGENTS.md` 的补充细则，只记录当前仓库已经确认的开发约束。
+若与 `AGENTS.md` 冲突，以 `AGENTS.md` 为准。
 
-优先级约束：
+## 1. 适用边界
 
-- 若与 `AGENTS.md` 冲突，以 `AGENTS.md` 为准。
-- 若与 `docs/requirements.md`、`docs/architecture.md` 冲突，以这两份文档为准。
-- 本文件当前只沉淀已确认的细则项，不替代任务级设计文档与执行计划。
-
-## 1. 代码与结构
-
-- 目录结构遵循 `docs/go-structure.md` 的模块划分。
-- 业务逻辑与基础设施分层清晰，避免跨层耦合。
-- 关键逻辑必须有单元测试覆盖。
+- 本文件不替代 `docs/requirements.md`、`docs/architecture.md` 或任务级
+  `spec` / `plan`。
+- 涉及提交、分支、文档优先级、未提交改动处理、分级验证与验收时，以
+  `AGENTS.md` 为入口。
+- 本文件只补充更贴近当前代码库的测试、契约、依赖和同步细则。
 
 ## 2. 测试与覆盖率
 
-- 覆盖率基线：`go test ./... -cover` 总体不低于 **85%**。
-- 新增/修改的核心逻辑必须补充对应单测。
-- 允许个别包覆盖率低于阈值，但需说明原因。
+- 覆盖率基线：`go test ./... -cover` 总体不低于 85%。
+- 若本地沙箱限制导致测试无法监听端口或写默认 Go cache，必须明确记录阻塞
+  原因；可使用 `GOCACHE=/tmp/fetch_bilibili_gocache` 这类临时缓存路径复验。
+- 新增或修改核心业务逻辑时，必须补最贴近行为边界的测试：
+  - HTTP / SSE：`internal/api/http`
+  - 配置解析与写回：`internal/config`
+  - 任务、worker、恢复：`internal/jobs`、`internal/worker`、`internal/app`
+  - MySQL 查询与迁移：`internal/repo/mysql`、`internal/db`
+  - B 站适配：`internal/platform/bilibili`
+  - 前端状态与交互：`frontend/scripts/*` 与 Playwright E2E
+- 允许单个包低于 85%，但最终交付说明必须解释原因，并确保总体覆盖率不低于
+  基线。
 
-## 3. 日志、错误与敏感信息处理
+## 3. 前端验证入口
 
-- 日志统一使用中文，记录最小必要上下文；优先带 `id`、`uid`、任务类型、
-  页码、状态、接口动作。
+- 当前前端没有独立 `npm run lint` 脚本，不能把 lint 写成已存在校验入口。
+- 命中前端代码、脚本或构建配置时，当前最小验证入口为：
+  - `cd frontend && npm run test:state`
+  - `cd frontend && npm run test:vite-config`
+  - `cd frontend && npm run test:smoke`
+  - `cd frontend && npm run build`
+- 涉及浏览器端真实流程、配置保存、SSE 重连、候选池操作或端到端联动时，再补：
+  - `cd frontend && npm run test:e2e`
+- `test:e2e` 默认使用 mock API 与前端 dev server；真实联调需要显式设置
+  `E2E_MODE=live`、`E2E_BASE_URL` 与 `E2E_API_BASE`。
+
+## 4. API、SSE 与状态契约
+
+- 后端对外 JSON 字段统一使用 `snake_case`。
+- 前端内部状态可使用 `camelCase`，但转换与兼容逻辑应集中在
+  `frontend/src/lib/state.js`。
+- HTTP 与 SSE 的时间字段都使用 RFC 3339 字符串，但空值表现不完全一致：
+  - HTTP 快照中带 `omitempty` 的字段，零值时会被省略。
+  - 未加 `omitempty` 的 HTTP 字段会返回空字符串。
+  - 当前由 `map` 手工构造的 SSE payload，空时间字段通常保留为空字符串。
+- `creator.status`、`candidate.status`、`job.status`、`video.state` 与
+  `/system/status` 相关字段属于对外契约；新增、删除或重命名必须同步改后
+  端、前端映射、`docs/api.md` 与测试。
+- `video.changed` 当前存在 `state="FAILED"` 的运行时例外；不要把这个例外误
+  写成 `GET /videos` 公开状态基线已扩展。
+- 触达 `/events/stream` 事件类型或 payload 时，必须同时核对快照接口和前端
+  `applyLiveEvent` 逻辑。
+
+## 5. 错误、日志与敏感信息
+
+- 日志统一使用中文，记录最小必要上下文；优先带 `id`、`uid`、任务类型、状
+  态、页码和接口动作。
 - 禁止在日志、HTTP 响应、SSE 事件、示例配置或任务文档中写入原始
   `cookie`、`SESSDATA`、数据库密码、完整 DSN、Token 或完整上游响应体。
-- `4xx` 返回稳定、可操作的中文错误；`5xx`、网络、数据库、上游平台错
-  误默认返回摘要，不直接透传 `err.Error()`。
-- `/system/status` 与 `system.changed` 只暴露驾驶舱所需的摘要运行态；
-  兼容字段若可能带出原始上游错误或本地环境细节，后续触达时应先脱敏再保
-  留。
-- 触达 `internal/api/http`、`internal/dashboard`、
-  `internal/platform/bilibili` 的错误返回或状态字段时，同步更新命中的
-  `docs/api.md`、`docs/config.md`、`docs/bilibili-adapter.md`，并补相
-  应测试。
+- 多数业务错误路径返回 `{"error":"..."}`，但当前部分 `405` 和 SSE 非 JSON
+  错误路径会直接写状态码，可能没有 JSON body。
+- 触达新增错误路径时，优先返回稳定、可操作的中文摘要；如果保留
+  `err.Error()`，必须先确认不会带出凭证、完整 DSN、完整上游响应体或本机敏
+  感路径。
 
-## 4. 对外接口、状态枚举与前后端契约
+## 6. 数据库与迁移
 
-- 后端对外 JSON 字段统一使用 `snake_case`；前端内部状态可用
-  `camelCase`，但转换与兼容逻辑应集中收敛在
-  `frontend/src/lib/state.js`。
-- HTTP 与 SSE 中的时间字段统一使用 RFC 3339 字符串；空时间保持空字符
-  串，不混用时间戳或多种格式。
-- `creator.status`、`candidate.status`、`job.status`、`video.state`
-  与 `/system/status` 相关状态字段属于稳定契约。新增、删除、重命名状态
-  值时，必须同步修改后端返回、前端映射、`docs/api.md` 与测试。
-- 查询参数名、默认值、分页规则、过滤语义，以及 `/events/stream` 的事件
-  类型和 payload，都按对外契约处理，禁止只改一侧。
-- 触达 `internal/api/http`、`frontend/src/lib/api.js`、
-  `frontend/src/lib/state.js` 或 SSE payload 时，至少执行后端验证；若前
-  端消费链路也受影响，再补 `cd frontend && npm run test:state`，并按
-  影响面追加 `test:smoke` / `test:e2e`。
-- 只改实现不更新 `docs/api.md`，或只改 `docs/api.md` 不核对实现，都不
-  算完成。
+- 数据库 schema 变更必须通过 `migrations/*.sql` 落地。
+- `migrations/*.sql` 是执行来源；`docs/mysql-schema.md` 是结构说明，不是执
+  行入口。
+- 新迁移文件保持当前序号风格：`000NN_<slug>.sql`。
+- 每个迁移必须包含 `-- +goose Up` 与 `-- +goose Down`。
+- 触达迁移、自动迁移开关或 schema 字段语义时，至少同步：
+  - `docs/mysql-schema.md`
+  - 命中的 repo / service / API 文档
+  - 相关测试
 
-## 5. 数据库变更
+## 7. 作业、worker 与恢复
 
-- 数据库 schema 变更必须通过 `migrations/` 中的迁移文件提交，不允许只改文档或手工 SQL。
-- `docs/mysql-schema.md` 是结构说明，`migrations/*.sql` 才是执行来源。
-- 迁移文件需要配套单元测试或启动链路测试，至少覆盖自动迁移开关与失败分支。
+- 任务类型和状态统一以 `internal/jobs/types.go` 为准。
+- 当前任务类型：`fetch`、`download`、`check`、`cleanup`、`discover`。
+- 当前任务状态：`queued`、`running`、`success`、`failed`。
+- 活动任务去重只把 `queued` 与 `running` 视为活动任务。
+- 命中 `jobs.ErrJobAlreadyActive` 时，上层应按“无需重复创建”处理。
+- 启动恢复当前只修复：
+  - `running` 任务重新入队为 `queued`
+  - 无活动下载支撑的 `DOWNLOADING` 视频修正为 `NEW` 或 `DOWNLOADED`
+  - 缺失有效文件的 `DOWNLOADED` 视频回退为 `NEW`
 
-## 6. 安全与合规
+## 8. 配置写回与部署语义
 
-- 遵守平台服务条款，不进行超频请求。
-- 必要时添加限速、重试与风控处理逻辑。
+- `PUT /system/config` 是整份配置文档写回。
+- 写回前必须先比对内容并完成解析校验；未变化时返回 `changed=false`，不得
+  触发重启。
+- `restart_scheduled=true` 只表示写回成功且重启请求已发出，不表示服务已恢
+  复，也不等价于重新部署最新代码。
+- Docker Compose 下，前端设置页保存配置后的重启当前主要依赖容器内后端进程
+  自重启，不依赖 Docker 重拉容器。
+- 触达配置写回、重启调度或前端重启提示时，至少同步：
+  - `docs/api.md`
+  - `docs/config.md`
+  - `docs/runbook.md`
+  - `README.md`
+  - 若容器部署语义受影响，再补 `docs/container-deploy.md`
 
-## 7. 测试分层与补测规则
+## 9. 依赖与脚本
 
-- 测试层与变更层必须对应：HTTP / SSE 改动补 `internal/api/http` 测试，
-  repo/mysql 改动补仓储测试，jobs / worker / recovery 改动补对应包测
-  试，配置解析 / 写回改动补 `internal/config` 测试。
-- 触达 `frontend/src/lib/api.js`、`frontend/src/lib/state.js`、
-  `frontend/src/App.jsx` 的契约映射、SSE 应用或配置保存交互时，至少补
-  `cd frontend && npm run test:state`，再按影响面补 `test:smoke` /
-  `test:e2e`。
-- 不能只以一次笼统的 `go test ./...` 通过代替命中层级的补测。
+- 新增 Go 依赖时，同步更新 `go.mod` 与 `go.sum`。
+- 新增前端依赖时，同步更新 `frontend/package.json` 与
+  `frontend/package-lock.json`。
+- 前端辅助脚本优先放 `frontend/scripts/` 并通过 `package.json` 暴露入口。
+- 运维 / 部署脚本优先放 `scripts/`，正式入口必须配套 `scripts/tests/`
+  smoke 测试。
+- Shell 与 PowerShell 部署脚本的命令语义应保持一致；若当前环境无法执行
+  `pwsh`，必须在验收说明中标记为未执行，而不是写成通过。
 
-## 8. 作业状态流转、幂等与恢复
-
-- 任务类型与状态统一以 `internal/jobs/types.go` 为准；当前只承认
-  `fetch`、`download`、`check`、`cleanup`、`discover` 与
-  `queued`、`running`、`success`、`failed`。
-- 新任务统一从 `queued` 入队，worker 执行后只能落到 `success` /
-  `failed`；去重判断统一收敛在仓储层，命中 `jobs.ErrJobAlreadyActive`
-  时按“无需重复创建”处理。
-- 启动恢复只允许修复当前已定义的残留态：`running` 任务重新入队，
-  `DOWNLOADING` / `DOWNLOADED` 视频按现有恢复逻辑修正；新增恢复规则前
-  必须先有 `spec` / `plan`。
-
-## 9. 仓储、SQL 与事务边界
-
-- `internal/repo/mysql` 只负责持久化、查询拼装、行映射和数据库级错误处
-  理，不承载 HTTP、事件发布、外部调用或文件系统副作用。
-- SQL 的排序、分页、过滤和状态条件必须显式表达，不能依赖 MySQL 隐式顺
-  序；扫描 `NULL`、JSON、时间字段的细节应留在仓储层。
-- 只有在同一仓储操作需要保证多条 SQL 原子性时，才允许在仓储层开事务；
-  事务内不做网络、事件或磁盘 I/O。
-
-## 10. 配置写回与重启语义
-
-- `PUT /system/config` 当前是整份配置文档写回；写回前必须先比对内容并通
-  过解析校验，未变化时返回 `changed=false` 且不得重启。
-- `restart_scheduled=true` 只表示写回成功且重启请求已发出，不表示服务已
-  完成重启，更不等价于重新部署最新代码。
-- 触达配置写回、重启调度、前端重启提示或 `/system/config` 返回语义时，
-  同步更新 `docs/api.md`、`docs/config.md`、`docs/runbook.md`、
-  `README.md`，必要时再补 `docs/container-deploy.md`。
-
-## 11. 文档同步矩阵
+## 10. 文档同步矩阵
 
 - 触达 API / SSE：至少同步 `docs/api.md`。
 - 触达配置、默认值、保存与重启：至少同步 `docs/config.md`、
-  `docs/runbook.md`、`README.md`；若部署方式受影响，再补
-  `docs/container-deploy.md`。
-- 触达 worker、scheduler、恢复、任务状态：至少同步 `docs/worker.md`、
+  `docs/runbook.md`、`README.md`。
+- 触达容器、镜像、部署脚本或挂载路径：至少同步 `docs/container-deploy.md`
+  与 `README.md`。
+- 触达 worker、scheduler、恢复或任务状态：至少同步 `docs/worker.md`、
   `docs/job-scheduler.md`、`docs/runbook.md`。
-- 触达存储、清理、浏览目录：至少同步 `docs/storage-policy.md`、
+- 触达存储、cleanup 或浏览投影：至少同步 `docs/storage-policy.md`、
   `docs/data-model.md`、`docs/runbook.md`。
-
-## 12. 依赖与脚本引入规范
-
-- 新增 Go 依赖时，同步更新 `go.mod` 与 `go.sum`；新增前端依赖时，同步更
-  新 `frontend/package.json` 与 `frontend/package-lock.json`。
-- 前端辅助脚本优先放 `frontend/scripts/` 并通过 `package.json` 暴露入
-  口；运维 / 部署脚本优先放 `scripts/`，正式入口要配套 `scripts/tests/`
-  smoke 测试。
-- 新依赖或新脚本不能只落文件不补验证与文档；至少说明引入原因、运行前
-  提与命中的验证入口。

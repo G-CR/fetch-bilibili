@@ -1,78 +1,130 @@
 # 容器化部署说明（Docker / Compose）
 
-## 1. 目标
-- 通过 Docker 构建服务镜像。
-- 通过 Docker Compose 启动 MySQL + 后端应用 + 前端控制台。
+本文档只描述当前仓库已经存在的容器化部署方式：`Dockerfile`、
+`docker-compose.yml`、`scripts/deploy.sh` 与 `scripts/deploy.ps1`。
 
-## 2. 文件说明
-- `Dockerfile`：多阶段构建 Go 二进制。
-- `docker-compose.yml`：编排 MySQL、后端应用与前端控制台。
-- `.env.example`：镜像源与镜像标签示例。
-- `configs/config.example.yaml`：配置模板。
-- `configs/config.yaml`：容器默认运行配置。
+## 1. 部署形态
 
-## 3. 构建镜像
+- `docker-compose.yml` 当前编排 3 个服务：
+  - `mysql`
+  - `app`
+  - `frontend`
+- `app` 镜像由仓库根目录 `Dockerfile` 多阶段构建。
+- `frontend` 当前不在容器内构建，而是直接挂载宿主机的 `frontend/dist` 静态产
+  物，由独立 `nginx:alpine` 容器提供页面。
+- 因此，`docker compose up -d --build` 之前，必须先在宿主机完成一次前端构
+  建。
+
+## 2. 关键文件
+
+- `Dockerfile`
+  - 构建 Go 二进制，并在运行镜像中安装 `ffmpeg`。
+- `docker-compose.yml`
+  - 编排 MySQL、后端应用和前端静态站点。
+- `.env.example`
+  - 镜像仓库与标签模板。
+- `configs/config.example.yaml`
+  - 配置模板，不直接作为运行时挂载文件。
+- `configs/config.yaml`
+  - 默认容器运行配置。
+- `scripts/deploy.sh`
+  - Shell 部署入口。
+- `scripts/deploy.ps1`
+  - PowerShell 部署入口。
+
+## 3. 准备步骤
+
+最小准备命令：
+
 ```bash
 cp .env.example .env
 cp configs/config.example.yaml configs/config.yaml
-docker build -t fetch-bilibili:dev .
 ```
 
-## 4. 使用 Compose 启动
+如需使用博主文件同步，再准备：
+
 ```bash
-docker compose up -d --build
+cp configs/creators.example.yaml configs/creators.yaml
 ```
 
-启动后默认访问地址：
-- 前端控制台：`http://localhost:5173`
-- 后端服务：`http://localhost:8080`
-- MySQL：`localhost:3307`
+前端构建步骤：
 
-## 5. 配置与挂载
-- 默认要求先准备 `configs/config.yaml`；`configs/config.example.yaml` 只作为模板，不直接挂载运行。
-- 应用配置：默认映射 `/app/config.yaml`。
-- 视频存储目录：`./data/bilibili` → `/data/bilibili`。
-- MySQL 数据目录：`./data/mysql` → `/var/lib/mysql`。
-- 配置文件路径可通过环境变量 `FETCH_CONFIG` 覆盖。
-- 前端容器默认通过挂载 `frontend/dist` 发布静态站点。
-- 前端容器使用独立的 `nginx:alpine` 镜像提供静态页面，不再复用后端镜像。
-- 因此前端在执行 `docker compose up -d --build` 之前，需要先在宿主机完成一次前端构建。
-- 当前前端默认以 `API 模式` 启动，默认访问后端地址 `http://localhost:8080`。
-- 在前端设置页保存配置后，如内容有变化，`app` 容器会自动重启；页面会显示「重启中 / 已恢复」状态，重启窗口内短暂不可用属于正常现象。
-
-### 5.1 前端构建后再启动容器
 ```bash
-cp .env.example .env
-cp configs/config.example.yaml configs/config.yaml
-
 cd frontend
 npm install --registry=https://registry.npmmirror.com
 npm run test:state
 npm run test:vite-config
 npm run test:smoke
 npm run build
-
 cd ..
-docker compose up -d --build
 ```
 
-### 5.2 博主列表文件挂载示例
-```yaml
-  app:
-    volumes:
-      - ./configs/config.yaml:/app/config.yaml
-      - ./configs/creators.yaml:/app/creators.yaml:ro
-```
+## 4. 当前 Compose 行为
 
-并在配置文件中指向容器内路径：
+当前默认端口：
+
+- 前端控制台：`http://localhost:5173`
+- 后端服务：`http://localhost:8080`
+- MySQL：`localhost:3307`
+
+当前默认挂载：
+
+- `./data/mysql` -> `/var/lib/mysql`
+- `./data/bilibili` -> `/data/bilibili`
+- `./configs/config.yaml` -> `/app/config.yaml`
+- `./frontend/dist` -> `/usr/share/nginx/html`
+
+可选挂载：
+
+- `./configs/creators.yaml:/app/creators.yaml:ro`
+
+若启用博主文件挂载，配置中应写：
+
 ```yaml
 creators:
   file: "/app/creators.yaml"
   reload_interval: "1m"
 ```
 
-## 6. 国内镜像源配置
-项目默认使用一组已在当前环境验证可用的华为云 SWR Docker Hub 同步地址：
+补充说明：
+
+- `FETCH_CONFIG` 在容器内当前固定指向 `/app/config.yaml`。
+- `app` 服务配置了 `restart: unless-stopped`。
+- 但前端设置页保存配置后的“重启”当前主要依赖后端进程内自重启，不依赖容
+  器被 Docker 重新拉起。
+- 保存配置成功后，页面会出现「重启中 / 已恢复」状态；这个窗口内接口短暂
+  不可用属于当前承认的正常现象。
+
+## 5. 构建与启动
+
+直接使用 Compose：
+
+```bash
+docker compose up -d --build
+```
+
+若只想更新后端容器：
+
+```bash
+docker compose up -d --build app
+```
+
+仓库内现有部署脚本：
+
+- `bash scripts/deploy.sh deploy-all`
+  - 执行后端测试、前端快速测试、前端构建，再启动全部容器。
+- `bash scripts/deploy.sh deploy-app`
+  - 只验证并部署 `app`。
+- `bash scripts/deploy.sh restart`
+  - 重启 `app` 与 `frontend`。
+- `bash scripts/deploy.sh status`
+  - 查看当前服务状态。
+- `pwsh -NoProfile -File scripts/deploy.ps1 <command>`
+  - PowerShell 侧提供与 Shell 版等价的命令语义。
+
+## 6. 镜像源
+
+项目默认通过 `.env` 提供一组可替换的镜像变量：
 
 ```dotenv
 MYSQL_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/mysql:8.0
@@ -82,87 +134,74 @@ APP_IMAGE=fetch-bilibili-app
 FRONTEND_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/nginx:1.27-alpine
 ```
 
-`docker compose` 会自动读取项目根目录的 `.env`。如果需要更换镜像源，只需要修改 `.env`，不需要改 `Dockerfile` 或 `docker-compose.yml`。
-例如，你也可以按需切到官方源或私有仓库：
+说明：
 
-```dotenv
-MYSQL_IMAGE=mysql:8.0
-GO_IMAGE=golang:1.22-alpine
-ALPINE_IMAGE=alpine:3.20
-FRONTEND_IMAGE=nginx:1.27-alpine
-```
+- `docker compose` 会自动读取项目根目录的 `.env`。
+- 若需要切换官方源、私有仓库或其他国内源，只需改 `.env`，不必改
+  `Dockerfile` 或 `docker-compose.yml`。
+- 建议固定具体 tag，不要使用 `latest`。
 
-### 6.1 Docker Desktop
-在 `Settings -> Docker Engine` 中加入：
+如需宿主机层面的镜像加速，可额外配置 Docker Daemon 的
+`registry-mirrors`。
 
-```json
-{
-  "registry-mirrors": [
-    "https://docker.m.daocloud.io"
-  ]
-}
-```
+## 7. 数据库与启动检查
 
-保存后执行 `Apply & Restart`。
+首次部署前只需要保证数据库可创建；应用容器启动后会在
+`mysql.auto_migrate: true` 下自动执行 `migrations/*.sql`。
 
-### 6.2 Linux daemon.json
-```bash
-sudo mkdir -p /etc/docker
-sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
-{
-  "registry-mirrors": [
-    "https://docker.m.daocloud.io"
-  ]
-}
-EOF
-sudo systemctl daemon-reload
-sudo systemctl restart docker
-```
+成功标志：
 
-### 6.3 使用建议
-- 保持镜像 tag 固定，不要使用 `latest`。
-- 如果公共镜像在高峰期不稳定，优先切换 `.env` 到你的企业私有仓库或云厂商镜像仓库。
-- 如果 `docker compose build app` 在拉取基础镜像阶段失败，优先排查本机代理、Docker Daemon 镜像加速器和当前 `.env` 指向的镜像源，而不是先怀疑项目构建逻辑。
-- 前端容器默认使用独立的 `nginx:alpine` 静态服务镜像，避免受后端镜像入口点影响。
+- `docker compose logs app --tail=200` 中出现 `数据库迁移完成`
+- `docker compose ps` 中 `mysql` 与 `app` 均已启动
+- 前端页面可访问
 
-## 7. 初始化数据库
-首次启动只需要保证数据库已创建，应用容器会在启动阶段自动执行内置迁移：
-- 默认配置：`mysql.auto_migrate: true`
-- 权威 schema 来源：`migrations/00001_init.sql`
-- 成功标志：`docker compose logs app` 中出现「数据库迁移完成」
-
-如果你在生产环境中由外部变更平台统一管理数据库，可将 `mysql.auto_migrate` 关闭；但必须确保对应版本迁移已经先执行完成。
-
-## 8. 启动后验证
+推荐检查命令：
 
 ```bash
-curl http://localhost:8080/healthz
-curl http://localhost:8080/system/status
-open http://localhost:5173
+docker compose config
+docker compose ps
+docker compose logs app --tail=200
+curl -sf http://127.0.0.1:8080/healthz
+curl -sf http://127.0.0.1:8080/system/status
 ```
 
 预期：
+
 - `GET /healthz` 返回 `ok`
 - `GET /system/status` 返回 JSON
-- 前端页面可打开，并在 `API 模式` 下自动拉取真实数据
-- `docker compose logs app` 可看到中文迁移日志，不再需要手工贴 SQL
+- 前端页面能打开并自动请求 `http://localhost:8080`
 
-## 9. 常见问题
-- 启动后无法连接 MySQL：
-  - 确认 `configs/config.yaml` 中的 DSN 与 `docker-compose.yml` 一致。
-- 前端页面打不开：
-  - 确认 `frontend` 服务已启动并监听 `5173` 端口。
-- 前端能打开但无法联动：
-  - 确认后端 `app` 服务正常运行，并在前端页面中使用 `http://localhost:8080` 作为 API 地址。
-- 拉取镜像超时：
-  - 先执行 `cp .env.example .env`
-  - 再确认 Docker Daemon 已配置 `registry-mirrors`
-  - 最后执行 `docker compose config` 检查实际生效的镜像地址
-- Docker 构建时被本地代理拦截：
-  - `./scripts/deploy.sh` 与 `powershell -File .\scripts\deploy.ps1` 会在识别到 `127.0.0.1:7890` 一类 BuildKit 本地代理残留错误时，自动改用 `DOCKER_BUILDKIT=0` 重试
-  - 如需手工绕过，可直接执行 `DOCKER_BUILDKIT=0 docker compose up -d --build`
-  - 典型现象是日志里出现 `127.0.0.1:7890`、`connection reset by peer` 或镜像鉴权失败
+## 8. 常见问题
 
-## 10. 下一步建议
-- 生成 Go 工程骨架后再执行容器构建。
-- 增加 `healthcheck` 与 `/healthz` 接口。
+- 启动后无法连接 MySQL
+  - 先核对 `configs/config.yaml` 中 DSN 与 `docker-compose.yml` 是否一致。
+- 前端页面打不开
+  - 确认已经先构建 `frontend/dist`，且 `frontend` 容器处于运行状态。
+- 前端能打开但无法联动
+  - 确认 `app` 服务正常运行，并在页面中使用 `http://localhost:8080` 作为
+    API 地址。
+- 保存配置后长期未恢复
+  - 先看前端是否仍停留在「等待后端恢复」。
+  - 再看 `docker compose logs app --tail=200` 是否存在配置校验或启动报错。
+  - 若配置文件没有实际变化，后端不会重启；这时接口应返回
+    `changed=false`。
+- 拉取镜像超时
+  - 先确认项目根目录存在 `.env`，且镜像地址仍可用。
+  - 再确认 Docker Daemon 已配置 `registry-mirrors`（如你依赖镜像加速）。
+  - 最后执行 `docker compose config` 检查最终生效的镜像地址。
+- Docker 构建被本地代理残留拦截
+  - 当前 `scripts/deploy.sh` 与 `scripts/deploy.ps1` 都会在识别到
+    `127.0.0.1:7890` 一类 BuildKit 本地代理残留错误时，自动改用
+    `DOCKER_BUILDKIT=0` 重试。
+  - 如需手工绕过，可直接执行：
+
+```bash
+DOCKER_BUILDKIT=0 docker compose up -d --build
+```
+
+## 9. 相关文档
+
+- 本地直跑与排障：`docs/runbook.md`
+- 配置项说明：`docs/config.md`
+- API 与前端联动：`docs/api.md`
+- 部署与验证规范：`AGENTS.md`
