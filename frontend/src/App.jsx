@@ -41,6 +41,7 @@ const sections = [
   { id: "creators", label: "博主" },
   { id: "candidates", label: "候选池" },
   { id: "tasks", label: "任务" },
+  { id: "rare", label: "绝版" },
   { id: "storage", label: "存储" },
   { id: "risk", label: "风控" },
   { id: "settings", label: "设置" }
@@ -119,6 +120,10 @@ function App() {
     platform: "bilibili",
     status: "active"
   });
+  const [rareFilters, setRareFilters] = useState({
+    creatorId: "all",
+    keyword: ""
+  });
   const [configPath, setConfigPath] = useState("");
   const [configText, setConfigText] = useState("");
   const [savedConfigText, setSavedConfigText] = useState("");
@@ -146,6 +151,7 @@ function App() {
   const creatorsPager = state.pagination?.creators || { page: 1, pageSize: PAGE_SIZE_OPTIONS[0] };
   const jobsPager = state.pagination?.jobs || { page: 1, pageSize: PAGE_SIZE_OPTIONS[0] };
   const videosPager = state.pagination?.videos || { page: 1, pageSize: PAGE_SIZE_OPTIONS[0] };
+  const rareVideosPager = state.pagination?.rareVideos || { page: 1, pageSize: PAGE_SIZE_OPTIONS[0] };
   const candidateFilters = state.candidatePool?.filters || DEFAULT_CANDIDATE_FILTERS;
   const candidateItems = Array.isArray(state.candidatePool?.items) ? state.candidatePool.items : [];
   const paginatedCreators = useMemo(
@@ -159,6 +165,51 @@ function App() {
   const paginatedVideos = useMemo(
     () => paginateItems(state.videos, videosPager.page, videosPager.pageSize, PAGE_SIZE_OPTIONS[0]),
     [state.videos, videosPager.page, videosPager.pageSize]
+  );
+  const rareCreatorOptions = useMemo(() => {
+    const options = new Map();
+    (Array.isArray(state.rareVideos) ? state.rareVideos : []).forEach((video) => {
+      const creatorID = Number(video?.creatorId) || 0;
+      if (!creatorID || options.has(creatorID)) {
+        return;
+      }
+      options.set(creatorID, {
+        id: creatorID,
+        name: video?.creatorName || `博主 #${creatorID}`
+      });
+    });
+    return [...options.values()].sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
+  }, [state.rareVideos]);
+  const filteredRareVideos = useMemo(() => {
+    const creatorFilter = String(rareFilters.creatorId || "all");
+    const keyword = String(rareFilters.keyword || "").trim().toLowerCase();
+    const source = Array.isArray(state.rareVideos) ? state.rareVideos : [];
+
+    return source
+      .filter((video) => {
+        if (creatorFilter !== "all" && String(video?.creatorId || "") !== creatorFilter) {
+          return false;
+        }
+        if (!keyword) {
+          return true;
+        }
+        const haystacks = [video?.title, video?.videoId, video?.creatorName]
+          .map((value) => String(value || "").toLowerCase());
+        return haystacks.some((value) => value.includes(keyword));
+      })
+      .sort((left, right) => {
+        const timeDiff =
+          (Date.parse(right?.outOfPrintAt || "") || Date.parse(right?.lastCheckAt || "") || 0) -
+          (Date.parse(left?.outOfPrintAt || "") || Date.parse(left?.lastCheckAt || "") || 0);
+        if (timeDiff !== 0) {
+          return timeDiff;
+        }
+        return (Number(right?.id) || 0) - (Number(left?.id) || 0);
+      });
+  }, [rareFilters.creatorId, rareFilters.keyword, state.rareVideos]);
+  const paginatedRareVideos = useMemo(
+    () => paginateItems(filteredRareVideos, rareVideosPager.page, rareVideosPager.pageSize, PAGE_SIZE_OPTIONS[0]),
+    [filteredRareVideos, rareVideosPager.page, rareVideosPager.pageSize]
   );
   const candidatePagination = useMemo(
     () =>
@@ -430,7 +481,7 @@ function App() {
         logs: withLog
           ? [
               makeLog(
-                `已同步真实数据: ${snapshot.creators.length} 个博主 / ${snapshot.jobs.length} 个任务 / ${snapshot.videos.length} 个视频`
+                `已同步真实数据: ${snapshot.creators.length} 个博主 / ${snapshot.jobs.length} 个任务 / ${snapshot.videos.length} 个视频 / ${snapshot.rareVideos.length} 个绝版`
               ),
               ...(previous.logs || [])
             ].slice(0, 18)
@@ -812,7 +863,15 @@ function App() {
   function updateLocalPager(key, patch) {
     updateState((previous) => {
       const items =
-        key === "creators" ? previous.creators : key === "jobs" ? previous.jobs : key === "videos" ? previous.videos : [];
+        key === "creators"
+          ? previous.creators
+          : key === "jobs"
+            ? previous.jobs
+            : key === "videos"
+              ? previous.videos
+              : key === "rareVideos"
+                ? filteredRareVideos
+                : [];
       const currentPager = previous.pagination?.[key] || { page: 1, pageSize: PAGE_SIZE_OPTIONS[0] };
       const nextPageSize = normalizePositiveInteger(patch?.pageSize, currentPager.pageSize);
       const requestedPage = normalizePositiveInteger(patch?.page, currentPager.page);
@@ -829,6 +888,14 @@ function App() {
         }
       };
     });
+  }
+
+  function updateRareFilters(patch) {
+    setRareFilters((previous) => ({
+      ...previous,
+      ...patch
+    }));
+    updateLocalPager("rareVideos", { page: 1 });
   }
 
   async function handleCandidateFilterSubmit(event) {
@@ -1495,6 +1562,72 @@ function App() {
                 ))
               ) : (
                 <p className="panel-note">暂无视频数据</p>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section id="rare" className="section section-grid">
+          <div className="panel panel--span">
+            <div className="panel-header">
+              <div>
+                <p className="section-kicker">绝版沉淀</p>
+                <h3>绝版视频</h3>
+              </div>
+              <span className="pill pill--soft">当前累计 {metrics.rareVideos} 个</span>
+            </div>
+            <p className="panel-note">
+              这里集中展示 `OUT_OF_PRINT` 视频清单。当前基于真实接口拉取最近 500 条绝版记录，并结合博主列表补齐名称。
+            </p>
+            <div className="rare-filters">
+              <label className="settings-field">
+                按博主筛选
+                <select
+                  value={rareFilters.creatorId}
+                  onChange={(event) => updateRareFilters({ creatorId: event.target.value })}
+                >
+                  <option value="all">全部博主</option>
+                  {rareCreatorOptions.map((creator) => (
+                    <option key={`rare-creator-${creator.id}`} value={String(creator.id)}>
+                      {creator.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="settings-field">
+                关键词
+                <input
+                  value={rareFilters.keyword}
+                  onChange={(event) => updateRareFilters({ keyword: event.target.value })}
+                  placeholder="搜索标题 / BV / 博主名"
+                />
+              </label>
+            </div>
+            <PaginationControls
+              page={paginatedRareVideos.page}
+              pageSize={paginatedRareVideos.pageSize}
+              total={paginatedRareVideos.total}
+              totalPages={paginatedRareVideos.totalPages}
+              onPageChange={(page) => updateLocalPager("rareVideos", { page })}
+              onPageSizeChange={(pageSize) => updateLocalPager("rareVideos", { page: 1, pageSize })}
+              className="pagination-controls--top"
+            />
+            <div className="rare-video-list" data-testid="rare-video-list">
+              {paginatedRareVideos.items.length > 0 ? (
+                paginatedRareVideos.items.map((video) => (
+                  <div className="rare-video-row" key={`rare-${video.id}`}>
+                    <div className="rare-video-row__main">
+                      <div className="row-title">{video.title || video.videoId || `视频 #${video.id}`}</div>
+                      <div className="row-meta">{rareVideoMeta(video)}</div>
+                      <div className="row-submeta">{rareVideoTimelineText(video)}</div>
+                    </div>
+                    <div className="rare-video-row__side">
+                      <VideoStateBadge state={video.state} />
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="panel-note">当前没有匹配的绝版视频。</p>
               )}
             </div>
           </div>
@@ -2465,6 +2598,14 @@ function videoMeta(video) {
   const favorites = formatCount(video.favoriteCount);
   const publish = formatDateTime(video.publishTime);
   return `发布时间 ${publish} · 播放 ${views} · 收藏 ${favorites}`;
+}
+
+function rareVideoMeta(video) {
+  return `${video.videoId || "-"} · ${video.creatorName || `博主 #${video.creatorId || "-"}`}`;
+}
+
+function rareVideoTimelineText(video) {
+  return `绝版于 ${formatDateTime(video.outOfPrintAt)} · 最近检查 ${formatDateTime(video.lastCheckAt)}`;
 }
 
 function cleanupPreviewText(video) {

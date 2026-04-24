@@ -39,6 +39,12 @@ try {
   if (!html.includes("任务详情")) {
     throw new Error("前端未渲染任务详情面板");
   }
+  if (!html.includes("绝版视频")) {
+    throw new Error("前端未渲染绝版视频面板");
+  }
+  if (!html.includes("按博主筛选")) {
+    throw new Error("前端未渲染绝版视频博主筛选");
+  }
   if (!html.includes("清理候选预览")) {
     throw new Error("前端未渲染清理预览面板");
   }

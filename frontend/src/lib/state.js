@@ -18,6 +18,7 @@ export function createDefaultState() {
     },
     creators: [],
     videos: [],
+    rareVideos: [],
     jobs: [],
     pagination: createDefaultPaginationState(),
     candidatePool: {
@@ -121,6 +122,7 @@ export function loadState() {
       },
       creators: isLegacyLocalMode ? defaults.creators : Array.isArray(parsed?.creators) ? parsed.creators : defaults.creators,
       videos: isLegacyLocalMode ? defaults.videos : Array.isArray(parsed?.videos) ? parsed.videos : defaults.videos,
+      rareVideos: isLegacyLocalMode ? defaults.rareVideos : Array.isArray(parsed?.rareVideos) ? parsed.rareVideos : defaults.rareVideos,
       jobs: isLegacyLocalMode ? defaults.jobs : Array.isArray(parsed?.jobs) ? parsed.jobs : defaults.jobs,
       pagination: normalizePaginationState(parsed?.pagination),
       candidatePool: normalizeCandidatePoolState(parsed?.candidatePool, defaults.candidatePool, {
@@ -165,7 +167,15 @@ export function saveState(state) {
 export function applyRemoteSnapshot(previous, snapshot, lastSyncAt = formatNow()) {
   const creators = normalizeCreators(snapshot?.creators);
   const jobs = normalizeJobs(snapshot?.jobs);
-  const videos = normalizeVideos(snapshot?.videos);
+  const videos = attachCreatorNames(normalizeVideos(snapshot?.videos), creators);
+  const rareVideos = sortRareVideos(
+    attachCreatorNames(
+      Array.isArray(snapshot?.rareVideos)
+        ? normalizeVideos(snapshot?.rareVideos)
+        : videos.filter((video) => video.state === "OUT_OF_PRINT"),
+      creators
+    )
+  );
   const storage = normalizeStorage(snapshot?.storage, snapshot?.system, previous?.storage);
   const limits = normalizeLimits(snapshot?.system?.limits, previous?.limits);
   const scheduler = normalizeScheduler(snapshot?.system?.scheduler, previous?.scheduler);
@@ -176,6 +186,7 @@ export function applyRemoteSnapshot(previous, snapshot, lastSyncAt = formatNow()
     creators,
     jobs,
     videos,
+    rareVideos,
     storage,
     limits,
     scheduler,
@@ -699,6 +710,7 @@ function normalizeVideos(items) {
     platform: stringOr(item?.platform, "bilibili"),
     videoId: stringOr(item?.video_id, ""),
     creatorId: numberOr(item?.creator_id, 0),
+    creatorName: stringOr(item?.creator_name, item?.creatorName, ""),
     title: stringOr(item?.title, ""),
     description: stringOr(item?.description, ""),
     publishTime: stringOr(item?.publish_time, ""),
@@ -874,19 +886,17 @@ function applyJobChanged(previous, data) {
 }
 
 function applyVideoChanged(previous, data) {
-  const videos = mergeEntityByID(previous.videos, normalizeVideoPatch(extractEntity(data, "video")), data, createEmptyVideo);
-  const rareVideos = videos.filter((video) => video.state === "OUT_OF_PRINT").length;
+  const patch = normalizeVideoPatch(extractEntity(data, "video"));
+  const videos = attachCreatorNames(
+    mergeEntityByID(previous.videos, patch, data, createEmptyVideo),
+    previous.creators
+  );
+  const nextRareVideos = mergeRareVideos(previous.rareVideos, previous.videos, patch, data, previous.creators);
 
   return {
     ...previous,
     videos,
-    system: {
-      ...previous.system,
-      overview: {
-        ...previous.system.overview,
-        rareVideos
-      }
-    }
+    rareVideos: nextRareVideos,
   };
 }
 
@@ -902,6 +912,8 @@ function applyCreatorChanged(previous, data) {
   return {
     ...previous,
     creators,
+    videos: attachCreatorNames(previous.videos, creators),
+    rareVideos: attachCreatorNames(previous.rareVideos, creators),
     system: {
       ...previous.system,
       overview: {
@@ -943,6 +955,7 @@ function createEmptyVideo(id) {
     platform: "bilibili",
     videoId: "",
     creatorId: 0,
+    creatorName: "",
     title: "",
     description: "",
     publishTime: "",
@@ -1056,6 +1069,9 @@ function normalizeVideoPatch(item) {
   if (hasOwnField(item, "creator_id")) {
     patch.creatorId = numberOr(item.creator_id, 0);
   }
+  if (hasOwnField(item, "creator_name")) {
+    patch.creatorName = String(item.creator_name || "");
+  }
   if (hasOwnField(item, "title")) {
     patch.title = String(item.title || "");
   }
@@ -1129,7 +1145,8 @@ function createDefaultPaginationState() {
   return {
     creators: createPagerState(DEFAULT_LIST_PAGE_SIZE),
     jobs: createPagerState(DEFAULT_LIST_PAGE_SIZE),
-    videos: createPagerState(DEFAULT_LIST_PAGE_SIZE)
+    videos: createPagerState(DEFAULT_LIST_PAGE_SIZE),
+    rareVideos: createPagerState(DEFAULT_LIST_PAGE_SIZE)
   };
 }
 
@@ -1166,8 +1183,64 @@ function normalizePaginationState(value) {
   return {
     creators: normalizePagerState(value?.creators, DEFAULT_LIST_PAGE_SIZE),
     jobs: normalizePagerState(value?.jobs, DEFAULT_LIST_PAGE_SIZE),
-    videos: normalizePagerState(value?.videos, DEFAULT_LIST_PAGE_SIZE)
+    videos: normalizePagerState(value?.videos, DEFAULT_LIST_PAGE_SIZE),
+    rareVideos: normalizePagerState(value?.rareVideos, DEFAULT_LIST_PAGE_SIZE)
   };
+}
+
+function attachCreatorNames(items, creators) {
+  const source = Array.isArray(items) ? items : [];
+  const creatorNameByID = new Map(
+    (Array.isArray(creators) ? creators : []).map((creator) => [
+      numberOr(creator?.id, 0),
+      stringOr(creator?.name, creator?.uid, "")
+    ])
+  );
+
+  return source.map((item) => ({
+    ...item,
+    creatorName: stringOr(creatorNameByID.get(numberOr(item?.creatorId, 0)), item?.creatorName, "")
+  }));
+}
+
+function mergeRareVideos(previousRareVideos, previousVideos, patch, data, creators) {
+  const source = Array.isArray(previousRareVideos) ? previousRareVideos : [];
+  if (!patch || !Number.isFinite(patch.id) || patch.id <= 0) {
+    return source;
+  }
+
+  const current =
+    source.find((item) => item?.id === patch.id) ||
+    (Array.isArray(previousVideos) ? previousVideos.find((item) => item?.id === patch.id) : null) ||
+    createEmptyVideo(patch.id);
+  const incomingState = String(patch?.state || current?.state || "").toUpperCase();
+  const shouldKeep = !isDeletedEvent(data) && incomingState === "OUT_OF_PRINT";
+
+  if (!shouldKeep) {
+    return source.filter((item) => item?.id !== patch.id);
+  }
+
+  return sortRareVideos(
+    attachCreatorNames(
+      mergeEntityByID(source, { ...current, ...patch }, {}, createEmptyVideo),
+      creators
+    )
+  );
+}
+
+function sortRareVideos(items) {
+  const source = Array.isArray(items) ? items.slice() : [];
+  source.sort((left, right) => rareVideoSortKey(right) - rareVideoSortKey(left) || numberOr(right?.id, 0) - numberOr(left?.id, 0));
+  return source;
+}
+
+function rareVideoSortKey(video) {
+  return (
+    Date.parse(video?.outOfPrintAt || "") ||
+    Date.parse(video?.lastCheckAt || "") ||
+    Date.parse(video?.publishTime || "") ||
+    0
+  );
 }
 
 function createPagerState(defaultPageSize) {

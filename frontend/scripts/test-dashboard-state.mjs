@@ -43,11 +43,23 @@ const next = applyRemoteSnapshot(previous, {
     {
       id: 21,
       video_id: "BV1xx411c7mD",
+      creator_id: 1,
       title: "稀有投稿",
       state: "OUT_OF_PRINT",
       publish_time: "2026-04-12T09:30:00Z",
       view_count: 1024,
       favorite_count: 88
+    }
+  ],
+  rareVideos: [
+    {
+      id: 31,
+      video_id: "BV1rare411c7mD",
+      creator_id: 1,
+      title: "绝版投稿",
+      state: "OUT_OF_PRINT",
+      out_of_print_at: "2026-04-13T00:00:00Z",
+      last_check_at: "2026-04-13T12:00:00Z"
     }
   ],
   system: {
@@ -114,6 +126,9 @@ assert.equal(next.creators[0].storageBytes, 7340032);
 assert.equal(next.jobs[0].status, "running");
 assert.equal(next.jobs[0].createdAt, "2026-04-13T12:00:00Z");
 assert.equal(next.videos[0].videoId, "BV1xx411c7mD");
+assert.equal(next.videos[0].creatorName, "测试 UP");
+assert.equal(next.rareVideos.length, 1);
+assert.equal(next.rareVideos[0].creatorName, "测试 UP");
 assert.equal(next.system.health, "online");
 assert.equal(next.system.cookieStatus, "valid");
 assert.equal(next.system.authEnabled, true);
@@ -201,6 +216,7 @@ assert.equal(defaults.pagination.creators.page, 1);
 assert.equal(defaults.pagination.creators.pageSize, 6);
 assert.equal(defaults.pagination.jobs.pageSize, 6);
 assert.equal(defaults.pagination.videos.pageSize, 6);
+assert.equal(defaults.pagination.rareVideos.pageSize, 6);
 
 const normalizedPager = normalizePagerState({ page: 0, pageSize: -1 }, 12);
 assert.deepEqual(normalizedPager, {
@@ -369,7 +385,8 @@ const liveBase = applyRemoteSnapshot(createDefaultState(), {
       updated_at: "2026-04-13T12:00:00Z"
     }
   ],
-  videos: [{ id: 20, video_id: "BVOLD", state: "ONLINE", title: "旧视频" }]
+  videos: [{ id: 20, video_id: "BVOLD", creator_id: 1, state: "ONLINE", title: "旧视频" }],
+  rareVideos: []
 });
 
 const afterJobChanged = applyLiveEvent(liveBase, {
@@ -392,17 +409,30 @@ const afterVideoChanged = applyLiveEvent(afterJobChanged, {
 });
 assert.equal(afterVideoChanged.videos.length, 1);
 assert.equal(afterVideoChanged.videos[0].state, "OUT_OF_PRINT");
+assert.equal(afterVideoChanged.rareVideos.length, 1);
+assert.equal(afterVideoChanged.rareVideos[0].videoId, "BVOLD");
+assert.equal(afterVideoChanged.rareVideos[0].creatorName, "旧博主");
+assert.equal(afterVideoChanged.system.overview.rareVideos, 0);
 
 const afterCreatorChanged = applyLiveEvent(afterVideoChanged, {
   type: "creator.changed",
   data: {
-    creator: { id: 2, uid: "2002", name: "新博主", platform: "bilibili", status: "active" }
+    creator: { id: 1, uid: "1001", name: "新博主", platform: "bilibili", status: "active" }
   }
 });
-assert.equal(afterCreatorChanged.creators.length, 2);
-assert.equal(afterCreatorChanged.creators[0].id, 2);
+assert.equal(afterCreatorChanged.creators.length, 1);
+assert.equal(afterCreatorChanged.creators[0].name, "新博主");
+assert.equal(afterCreatorChanged.rareVideos[0].creatorName, "新博主");
 
-const afterStorageChanged = applyLiveEvent(afterCreatorChanged, {
+const afterVideoRecovered = applyLiveEvent(afterCreatorChanged, {
+  type: "video.changed",
+  data: {
+    video: { id: 20, video_id: "BVOLD", creator_id: 1, state: "STABLE", title: "旧视频" }
+  }
+});
+assert.equal(afterVideoRecovered.rareVideos.length, 0);
+
+const afterStorageChanged = applyLiveEvent(afterVideoRecovered, {
   type: "storage.changed",
   data: {
     storage: {
@@ -411,12 +441,14 @@ const afterStorageChanged = applyLiveEvent(afterCreatorChanged, {
       safe_bytes: 3072,
       usage_percent: 50,
       file_count: 30,
+      rare_videos: 1,
       hottest_bucket: "bilibili",
       root_dir: "/data/new"
     }
   }
 });
 assert.equal(afterStorageChanged.storage.usedBytes, 2048);
+assert.equal(afterStorageChanged.system.overview.rareVideos, 1);
 
 const candidateListState = applyCandidateListSnapshot(
   createDefaultState(),

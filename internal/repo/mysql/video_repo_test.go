@@ -449,7 +449,7 @@ func TestVideoUpdateCheckStatusWithTimes(t *testing.T) {
 	}
 }
 
-func TestVideoListRecent(t *testing.T) {
+func TestVideoListRecentOutOfPrintOrdersByOutOfPrintTime(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock new: %v", err)
@@ -465,7 +465,7 @@ func TestVideoListRecent(t *testing.T) {
 		"view_count", "favorite_count", "state", "out_of_print_at", "stable_at", "last_check_at", "created_at", "updated_at",
 	}).AddRow(9, "bilibili", "BV1", 1, "t1", "desc", created, 10, "cover", 1, 2, "OUT_OF_PRINT", created, nil, created, created, updated)
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, platform, video_id, creator_id, title, description, publish_time, duration, cover_url, view_count, favorite_count, state, out_of_print_at, stable_at, last_check_at, created_at, updated_at FROM videos")).
+	mock.ExpectQuery(regexp.QuoteMeta("ORDER BY out_of_print_at DESC, last_check_at DESC, id DESC LIMIT ?")).
 		WithArgs(int64(1), "OUT_OF_PRINT", 5).
 		WillReturnRows(rows)
 
@@ -478,6 +478,43 @@ func TestVideoListRecent(t *testing.T) {
 		t.Fatalf("list recent error: %v", err)
 	}
 	if len(list) != 1 || list[0].VideoID != "BV1" {
+		t.Fatalf("unexpected list result")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestVideoListRecentKeepsPublishTimeOrderingForOtherStates(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+
+	created := time.Now().Add(-time.Hour)
+	updated := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "platform", "video_id", "creator_id", "title", "description", "publish_time", "duration", "cover_url",
+		"view_count", "favorite_count", "state", "out_of_print_at", "stable_at", "last_check_at", "created_at", "updated_at",
+	}).AddRow(10, "bilibili", "BV2", 1, "t2", "desc", created, 10, "cover", 1, 2, "STABLE", nil, created, created, created, updated)
+
+	mock.ExpectQuery(regexp.QuoteMeta("ORDER BY publish_time DESC, id DESC LIMIT ?")).
+		WithArgs(int64(1), "STABLE", 5).
+		WillReturnRows(rows)
+
+	list, err := repoImpl.Videos().ListRecent(context.Background(), repo.VideoListFilter{
+		Limit:     5,
+		CreatorID: 1,
+		State:     "STABLE",
+	})
+	if err != nil {
+		t.Fatalf("list recent error: %v", err)
+	}
+	if len(list) != 1 || list[0].VideoID != "BV2" {
 		t.Fatalf("unexpected list result")
 	}
 

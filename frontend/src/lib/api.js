@@ -2,6 +2,7 @@ const DEFAULT_TIMEOUT = 5000;
 const DEFAULT_STREAM_RECONNECT_DELAY = 1000;
 const DASHBOARD_JOB_LIMIT = 100;
 const DASHBOARD_VIDEO_LIMIT = 100;
+const DASHBOARD_RARE_VIDEO_LIMIT = 500;
 
 async function request(baseURL, path, options = {}) {
   const controller = new AbortController();
@@ -151,10 +152,11 @@ export async function updateSystemConfig(baseURL, content) {
 }
 
 export async function loadDashboardSnapshot(baseURL) {
-  const [creators, jobs, videos, system, storage] = await Promise.all([
+  const [creators, jobs, videos, rareVideos, system, storage] = await Promise.all([
     listCreators(baseURL),
     listJobs(baseURL, { limit: DASHBOARD_JOB_LIMIT }),
     listVideos(baseURL, { limit: DASHBOARD_VIDEO_LIMIT }),
+    listVideos(baseURL, { state: "OUT_OF_PRINT", limit: DASHBOARD_RARE_VIDEO_LIMIT }),
     getSystemStatus(baseURL),
     getStorageStats(baseURL)
   ]);
@@ -163,6 +165,7 @@ export async function loadDashboardSnapshot(baseURL) {
     creators,
     jobs,
     videos,
+    rareVideos,
     system,
     storage
   };

@@ -243,7 +243,11 @@ func (r *videoRepo) ListRecent(ctx context.Context, filter repo.VideoListFilter)
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	query += " ORDER BY publish_time DESC, id DESC LIMIT ?"
+	if filter.State == "OUT_OF_PRINT" {
+		query += " ORDER BY out_of_print_at DESC, last_check_at DESC, id DESC LIMIT ?"
+	} else {
+		query += " ORDER BY publish_time DESC, id DESC LIMIT ?"
+	}
 	args = append(args, limit)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
