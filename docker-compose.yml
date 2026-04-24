@@ -39,6 +39,7 @@ services:
     environment:
       # 可用 FETCH_CONFIG 指定配置文件路径
       FETCH_CONFIG: /app/config.yaml
+      LANG: C.UTF-8
 
   frontend:
     image: ${FRONTEND_IMAGE:-nginx:1.27-alpine}

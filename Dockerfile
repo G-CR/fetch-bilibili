@@ -23,6 +23,7 @@ WORKDIR /app
 COPY --from=build /out/server /app/server
 COPY configs/config.example.yaml /app/config.yaml
 
+ENV LANG=C.UTF-8
 USER app
 EXPOSE 8080
 

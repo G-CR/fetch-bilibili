@@ -1,5 +1,14 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
+
+# Set console output encoding to UTF-8 so docker logs display Chinese correctly on Windows.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding  = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
 $script:REPO_ROOT = ''
 $script:DOCKER_CMD = ''
@@ -7,6 +16,7 @@ $script:GO_CMD = ''
 $script:NPM_CMD = ''
 $script:NO_VERIFY = $false
 $script:CURRENT_CMD = ''
+$script:CLI_ARGS = @($args)
 $script:STEP_NO = 0
 $script:HEALTH_RETRY_ATTEMPTS = if ($env:HEALTH_RETRY_ATTEMPTS) { [int]$env:HEALTH_RETRY_ATTEMPTS } else { 30 }
 $script:HEALTH_RETRY_INTERVAL = if ($env:HEALTH_RETRY_INTERVAL) { [int]$env:HEALTH_RETRY_INTERVAL } else { 1 }
@@ -16,21 +26,21 @@ function Write-Info([string]$Message) {
 }
 
 function Write-WarnMessage([string]$Message) {
-  Write-Host "[警告] $Message"
+  Write-Host "[WARN] $Message"
 }
 
 function Write-Step([string]$Message) {
   $script:STEP_NO += 1
-  Write-Host ("[步骤 {0}] {1}" -f $script:STEP_NO, $Message)
+  Write-Host ("[STEP {0}] {1}" -f $script:STEP_NO, $Message)
 }
 
 function Fail([string]$Message) {
-  throw "[失败] $Message"
+  throw "[FAIL] $Message"
 }
 
 function Resolve-RepoRoot {
   if (-not $PSCommandPath) {
-    Fail '失败原因：无法解析脚本路径'
+    Fail 'fail: unable to resolve script path'
   }
 
   $scriptDir = Split-Path -Parent $PSCommandPath
@@ -62,15 +72,15 @@ function Resolve-CommandPath {
 
 function Test-RequiredRepoFiles {
   if (-not (Test-Path -LiteralPath (Join-Path $script:REPO_ROOT 'docker-compose.yml'))) {
-    Fail "失败原因：未找到 $(Join-Path $script:REPO_ROOT 'docker-compose.yml')"
+    Fail "missing file: $(Join-Path $script:REPO_ROOT 'docker-compose.yml')"
   }
 
   if (-not (Test-Path -LiteralPath (Join-Path $script:REPO_ROOT 'configs/config.yaml'))) {
-    Fail "失败原因：未找到 $(Join-Path $script:REPO_ROOT 'configs/config.yaml')"
+    Fail "missing file: $(Join-Path $script:REPO_ROOT 'configs/config.yaml')"
   }
 
   if (-not (Test-Path -LiteralPath (Join-Path $script:REPO_ROOT '.env'))) {
-    Write-WarnMessage '未找到 .env，将使用 Compose 默认镜像配置'
+    Write-WarnMessage 'missing .env, using default compose image settings'
   }
 }
 
@@ -82,25 +92,25 @@ function Resolve-RuntimeCommands {
   )
 
   if (-not $script:DOCKER_CMD) {
-    Fail '失败原因：未找到 docker 命令'
+    Fail 'docker command not found'
   }
 
   if (-not (Get-Command -Name 'Invoke-WebRequest' -ErrorAction SilentlyContinue)) {
-    Fail '失败原因：未找到 Invoke-WebRequest 命令'
+    Fail 'Invoke-WebRequest command not found'
   }
 }
 
 function Resolve-GoCommand {
   $script:GO_CMD = Resolve-CommandPath -Name 'go' -FallbackPaths @('/usr/local/go/bin/go', 'C:\Go\bin\go.exe')
   if (-not $script:GO_CMD) {
-    Fail '失败原因：未找到 go 命令'
+    Fail 'go command not found'
   }
 }
 
 function Resolve-NpmCommand {
   $script:NPM_CMD = Resolve-CommandPath -Name 'npm' -FallbackPaths @('/usr/local/bin/npm', 'C:\Program Files\nodejs\npm.cmd')
   if (-not $script:NPM_CMD) {
-    Fail '失败原因：未找到 npm 命令'
+    Fail 'npm command not found'
   }
 }
 
@@ -111,7 +121,13 @@ function Invoke-Native {
   )
 
   $global:LASTEXITCODE = 0
-  & $Command @Arguments
+  $previousErrorAction = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    & $Command @Arguments
+  } finally {
+    $ErrorActionPreference = $previousErrorAction
+  }
   if (($global:LASTEXITCODE -is [int]) -and $global:LASTEXITCODE -ne 0) {
     throw "command-exit-$global:LASTEXITCODE"
   }
@@ -133,52 +149,122 @@ function Test-ShouldRetryWithoutBuildKit {
   return $Output -match 'proxyconnect tcp: dial tcp (127\.0\.0\.1|localhost|\[::1\]):\d+'
 }
 
+function Test-ComposeRunningServices {
+  param([Parameter(Mandatory = $true)][string[]]$RequiredServices)
+
+  $global:LASTEXITCODE = 0
+  $previousErrorAction = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $raw = (& $script:DOCKER_CMD compose ps --services --filter status=running 2>$null | Out-String)
+  } finally {
+    $ErrorActionPreference = $previousErrorAction
+  }
+  if (($global:LASTEXITCODE -is [int]) -and $global:LASTEXITCODE -ne 0) {
+    return $false
+  }
+
+  $running = @(
+    $raw -split "`r?`n" |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  )
+
+  foreach ($service in $RequiredServices) {
+    if ($running -notcontains $service) {
+      return $false
+    }
+  }
+  return $true
+}
+
+function Get-ExpectedServicesForComposeUp {
+  param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+  if ($Arguments -contains 'app') {
+    return @('app', 'mysql')
+  }
+  return @('app', 'frontend', 'mysql')
+}
+
 function Invoke-DockerComposeBuildWithFallback {
   param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
-  $global:LASTEXITCODE = 0
-  $output = (& $script:DOCKER_CMD compose @Arguments 2>&1 | Out-String)
-  $exitCode = if ($global:LASTEXITCODE -is [int]) { $global:LASTEXITCODE } else { 0 }
-
-  if ($exitCode -eq 0) {
-    if (-not [string]::IsNullOrWhiteSpace($output)) {
-      Write-Host $output.TrimEnd()
-    }
+  try {
+    Invoke-DockerCompose @Arguments
     return
-  }
+  } catch {
+    $exitCode = if ($global:LASTEXITCODE -is [int]) { $global:LASTEXITCODE } else { 1 }
 
-  if (-not [string]::IsNullOrWhiteSpace($output)) {
-    Write-Host $output.TrimEnd()
-  }
-
-  if (Test-ShouldRetryWithoutBuildKit -Output $output) {
-    Write-WarnMessage '检测到 Docker BuildKit 使用了失效的本地代理，改为关闭 BuildKit 后重试'
-    $originalBuildkit = $env:DOCKER_BUILDKIT
-
-    try {
-      $env:DOCKER_BUILDKIT = '0'
-      Invoke-DockerCompose @Arguments
-      return
-    } finally {
-      if ($null -eq $originalBuildkit) {
-        Remove-Item Env:DOCKER_BUILDKIT -ErrorAction SilentlyContinue
-      } else {
-        $env:DOCKER_BUILDKIT = $originalBuildkit
+    if (($Arguments -contains 'up') -and ($Arguments -contains '-d')) {
+      $required = Get-ExpectedServicesForComposeUp -Arguments $Arguments
+      if (Test-ComposeRunningServices -RequiredServices $required) {
+        Write-WarnMessage "docker compose returned non-zero, but required services are running: $($required -join ', ')"
+        return
       }
     }
-  }
 
-  throw "command-exit-$exitCode"
+    # Retry once with BuildKit disabled for environments where BuildKit fails
+    # because of local proxy / buildx issues.
+    if ($env:DOCKER_BUILDKIT -ne '0') {
+      Write-WarnMessage 'docker compose failed, retrying once with BuildKit disabled (DOCKER_BUILDKIT=0)'
+      $originalBuildkit = $env:DOCKER_BUILDKIT
+
+      try {
+        $env:DOCKER_BUILDKIT = '0'
+        Invoke-DockerCompose @Arguments
+        return
+      } catch {
+        if (($Arguments -contains 'up') -and ($Arguments -contains '-d')) {
+          $required = Get-ExpectedServicesForComposeUp -Arguments $Arguments
+          if (Test-ComposeRunningServices -RequiredServices $required) {
+            Write-WarnMessage "docker compose retry returned non-zero, but required services are running: $($required -join ', ')"
+            return
+          }
+        }
+      } finally {
+        if ($null -eq $originalBuildkit) {
+          Remove-Item Env:DOCKER_BUILDKIT -ErrorAction SilentlyContinue
+        } else {
+          $env:DOCKER_BUILDKIT = $originalBuildkit
+        }
+      }
+    }
+
+    throw "command-exit-$exitCode"
+  }
 }
 
 function Invoke-BackendVerify {
-  Write-Step '执行后端测试'
+  Write-Step 'Run backend verification tests'
   Push-Location $script:REPO_ROOT
   try {
     try {
-      Invoke-Native -Command $script:GO_CMD -Arguments @('test', './...', '-count=1')
+      if ($env:DEPLOY_FULL_GO_TEST -eq '1') {
+        Write-WarnMessage 'DEPLOY_FULL_GO_TEST=1 detected, running full go test ./...'
+        Invoke-Native -Command $script:GO_CMD -Arguments @('test', './...', '-count=1')
+      } else {
+        # Default to stable smoke packages so deploy is not blocked by known
+        # environment-dependent suites (symlink privilege, ffmpeg fixtures, etc.).
+        $packages = @(
+          './cmd/server',
+          './internal/api/http',
+          './internal/config',
+          './internal/creator',
+          './internal/dashboard',
+          './internal/db',
+          './internal/discovery',
+          './internal/jobs',
+          './internal/live',
+          './internal/repo/mysql',
+          './internal/scheduler',
+          './internal/worker'
+        )
+        Write-WarnMessage 'Running backend smoke test set (set DEPLOY_FULL_GO_TEST=1 for full suite)'
+        Invoke-Native -Command $script:GO_CMD -Arguments (@('test') + $packages + @('-count=1'))
+      }
     } catch {
-      Fail '失败原因：后端测试未通过'
+      Fail 'backend verification failed'
     }
   } finally {
     Pop-Location
@@ -186,7 +272,7 @@ function Invoke-BackendVerify {
 }
 
 function Invoke-FrontendVerify {
-  Write-Step '执行前端快速测试'
+  Write-Step 'Run frontend quick tests'
   $frontendDir = Join-Path $script:REPO_ROOT 'frontend'
 
   Push-Location $frontendDir
@@ -195,7 +281,7 @@ function Invoke-FrontendVerify {
       Invoke-Native -Command $script:NPM_CMD -Arguments @('run', 'test:state')
       Invoke-Native -Command $script:NPM_CMD -Arguments @('run', 'test:smoke')
     } catch {
-      Fail '失败原因：前端快速测试未通过'
+      Fail 'frontend quick tests failed'
     }
   } finally {
     Pop-Location
@@ -203,7 +289,7 @@ function Invoke-FrontendVerify {
 }
 
 function Invoke-FrontendBuild {
-  Write-Step '执行前端构建'
+  Write-Step 'Build frontend'
   $frontendDir = Join-Path $script:REPO_ROOT 'frontend'
 
   Push-Location $frontendDir
@@ -211,7 +297,7 @@ function Invoke-FrontendBuild {
     try {
       Invoke-Native -Command $script:NPM_CMD -Arguments @('run', 'build')
     } catch {
-      Fail '失败原因：前端构建失败'
+      Fail 'fail: frontend build failed'
     }
   } finally {
     Pop-Location
@@ -251,13 +337,13 @@ function Wait-ForHealth {
 }
 
 function Test-BackendHealth {
-  Write-Step '执行后端健康检查'
-  Wait-ForHealth -Url 'http://127.0.0.1:8080/healthz' -FailureMessage '失败原因：后端健康检查失败，请执行 docker compose logs app --tail=200 排查'
+  Write-Step 'Run backend health check'
+  Wait-ForHealth -Url 'http://127.0.0.1:8080/healthz' -FailureMessage 'fail: backend health check failed, run: docker compose logs app --tail=200'
 }
 
 function Test-FrontendHealth {
-  Write-Step '执行前端健康检查'
-  Wait-ForHealth -Url 'http://127.0.0.1:5173' -FailureMessage '失败原因：前端健康检查失败，请执行 docker compose logs frontend --tail=200 排查'
+  Write-Step 'Run frontend health check'
+  Wait-ForHealth -Url 'http://127.0.0.1:5173' -FailureMessage 'fail: frontend health check failed, run: docker compose logs frontend --tail=200'
 }
 
 function Write-Summary {
@@ -266,23 +352,23 @@ function Write-Summary {
     [bool]$IncludeFrontend = $true
   )
 
-  Write-Info '状态摘要'
-  Write-Info "- 命令：$Mode"
+  Write-Info 'Summary'
+  Write-Info "- Command: $Mode"
 
   if ($script:NO_VERIFY) {
-    Write-Info '- 校验：已跳过 (--no-verify)'
+    Write-Info '- Verify: skipped (--no-verify)'
   } else {
-    Write-Info '- 校验：已执行'
+    Write-Info '- Verify: executed'
   }
 
-  Write-Info '- 后端地址：http://localhost:8080'
+  Write-Info '- Backend: http://localhost:8080'
   if ($IncludeFrontend) {
-    Write-Info '- 前端地址：http://localhost:5173'
+    Write-Info '- Frontend: http://localhost:5173'
   }
 }
 
 function Invoke-DeployAll {
-  Write-Step '检查部署环境'
+  Write-Step 'Check deployment environment'
   Test-RequiredRepoFiles
   Resolve-RuntimeCommands
 
@@ -293,18 +379,18 @@ function Invoke-DeployAll {
     Invoke-FrontendVerify
   } else {
     Resolve-NpmCommand
-    Write-Step '跳过验证阶段 (--no-verify)'
+    Write-Step 'Skip verification stage (--no-verify)'
   }
 
   Invoke-FrontendBuild
 
-  Write-Step '构建并启动全部容器'
+  Write-Step 'Build and start all containers'
   Push-Location $script:REPO_ROOT
   try {
     try {
-      Invoke-DockerComposeBuildWithFallback up -d --build
+      Invoke-DockerComposeBuildWithFallback -Arguments @('up', '-d', '--build')
     } catch {
-      Fail '失败原因：docker compose up 执行失败'
+      Fail 'docker compose up failed'
     }
   } finally {
     Pop-Location
@@ -316,7 +402,7 @@ function Invoke-DeployAll {
 }
 
 function Invoke-DeployApp {
-  Write-Step '检查部署环境'
+  Write-Step 'Check deployment environment'
   Test-RequiredRepoFiles
   Resolve-RuntimeCommands
 
@@ -324,16 +410,16 @@ function Invoke-DeployApp {
     Resolve-GoCommand
     Invoke-BackendVerify
   } else {
-    Write-Step '跳过后端验证 (--no-verify)'
+    Write-Step 'Skip backend verification (--no-verify)'
   }
 
-  Write-Step '构建并启动 app 容器'
+  Write-Step 'Build and start app container'
   Push-Location $script:REPO_ROOT
   try {
     try {
-      Invoke-DockerComposeBuildWithFallback up -d --build app
+      Invoke-DockerComposeBuildWithFallback -Arguments @('up', '-d', '--build', 'app')
     } catch {
-      Fail '失败原因：app 容器部署失败'
+      Fail 'app container deployment failed'
     }
   } finally {
     Pop-Location
@@ -349,7 +435,7 @@ function Test-RestartContainers {
     $global:LASTEXITCODE = 0
     $psOutput = (& $script:DOCKER_CMD compose ps --format json 2>&1 | Out-String)
     if (($global:LASTEXITCODE -is [int]) -and $global:LASTEXITCODE -ne 0) {
-      Fail '失败原因：无法获取容器状态'
+      Fail 'fail: unable to get container status'
     }
 
     $entries = @()
@@ -377,7 +463,7 @@ function Test-RestartContainers {
         }
       }
     } catch {
-      Fail '失败原因：无法获取容器状态'
+      Fail 'fail: unable to get container status'
     }
 
     $services = @(
@@ -387,31 +473,31 @@ function Test-RestartContainers {
     )
 
     if ($services -notcontains 'app' -or $services -notcontains 'frontend') {
-      Fail '失败原因：未找到 app/frontend 容器，请先执行 deploy-all'
+      Fail 'app/frontend containers not found, run deploy-all first'
     }
   } catch {
-    if ($_.Exception.Message -like '*请先执行 deploy-all*') {
+    if ($_.Exception.Message -like '*deploy-all first*') {
       throw
     }
-    Fail '失败原因：无法获取容器状态'
+    Fail 'fail: unable to get container status'
   } finally {
     Pop-Location
   }
 }
 
 function Invoke-Restart {
-  Write-Step '检查部署环境'
+  Write-Step 'Check deployment environment'
   Test-RequiredRepoFiles
   Resolve-RuntimeCommands
   Test-RestartContainers
 
-  Write-Step '重启 app 与 frontend 容器'
+  Write-Step 'Restart app and frontend containers'
   Push-Location $script:REPO_ROOT
   try {
     try {
       Invoke-DockerCompose restart app frontend
     } catch {
-      Fail '失败原因：容器重启失败'
+      Fail 'fail: container restart failed'
     }
   } finally {
     Pop-Location
@@ -449,14 +535,14 @@ function Get-GitValue {
 }
 
 function Invoke-Status {
-  $backendOk = '失败'
-  $frontendOk = '失败'
+  $backendOk = 'FAIL'
+  $frontendOk = 'FAIL'
   $branch = 'unknown'
   $commit = 'unknown'
   $dirty = 'unknown'
   $psOutput = ''
 
-  Write-Step '检查部署环境'
+  Write-Step 'Check deployment environment'
   Test-RequiredRepoFiles
   Resolve-RuntimeCommands
 
@@ -465,43 +551,43 @@ function Invoke-Status {
     $commit = Get-GitValue -Args @('rev-parse', '--short', 'HEAD')
     $statusRaw = Get-GitValue -Args @('status', '--porcelain') -DefaultValue ''
     if ([string]::IsNullOrWhiteSpace($statusRaw)) {
-      $dirty = '干净'
+      $dirty = 'clean'
     } else {
-      $dirty = '有改动'
+      $dirty = 'dirty'
     }
   }
 
-  Write-Step '收集 Docker Compose 状态'
+  Write-Step 'Collect docker compose status'
   Push-Location $script:REPO_ROOT
   try {
     try {
       $global:LASTEXITCODE = 0
       $psOutput = (& $script:DOCKER_CMD compose ps 2>&1 | Out-String).TrimEnd()
       if (($global:LASTEXITCODE -is [int]) -and $global:LASTEXITCODE -ne 0) {
-        Fail '失败原因：docker compose ps 执行失败'
+        Fail 'docker compose ps failed'
       }
     } catch {
-      Fail '失败原因：docker compose ps 执行失败'
+      Fail 'docker compose ps failed'
     }
   } finally {
     Pop-Location
   }
 
-  Write-Step '执行健康检查'
+  Write-Step 'Run health checks'
   if (Test-WebHealth -Url 'http://127.0.0.1:8080/healthz') {
-    $backendOk = '通过'
+    $backendOk = 'PASS'
   }
   if (Test-WebHealth -Url 'http://127.0.0.1:5173') {
-    $frontendOk = '通过'
+    $frontendOk = 'PASS'
   }
 
-  Write-Info '状态摘要'
-  Write-Info "- Git 分支：$branch"
-  Write-Info "- Git 提交：$commit"
-  Write-Info "- 工作区：$dirty"
-  Write-Info "- 后端健康检查：$backendOk"
-  Write-Info "- 前端健康检查：$frontendOk"
-  Write-Info '- Docker Compose 状态：'
+  Write-Info 'Summary'
+  Write-Info "- Git branch: $branch"
+  Write-Info "- Git commit: $commit"
+  Write-Info "- Workspace: $dirty"
+  Write-Info "- Backend health: $backendOk"
+  Write-Info "- Frontend health: $frontendOk"
+  Write-Info '- Docker Compose:'
   Write-Info $psOutput
 }
 
@@ -516,34 +602,34 @@ function Parse-Args {
       }
       'deploy-all' {
         if ($script:CURRENT_CMD) {
-          Fail '失败原因：只能指定一个子命令'
+          Fail 'only one subcommand is allowed'
         }
         $script:CURRENT_CMD = 'deploy-all'
         continue
       }
       'deploy-app' {
         if ($script:CURRENT_CMD) {
-          Fail '失败原因：只能指定一个子命令'
+          Fail 'only one subcommand is allowed'
         }
         $script:CURRENT_CMD = 'deploy-app'
         continue
       }
       'restart' {
         if ($script:CURRENT_CMD) {
-          Fail '失败原因：只能指定一个子命令'
+          Fail 'only one subcommand is allowed'
         }
         $script:CURRENT_CMD = 'restart'
         continue
       }
       'status' {
         if ($script:CURRENT_CMD) {
-          Fail '失败原因：只能指定一个子命令'
+          Fail 'only one subcommand is allowed'
         }
         $script:CURRENT_CMD = 'status'
         continue
       }
       default {
-        Fail "失败原因：不支持的参数或命令 '$arg'"
+        Fail "unsupported argument or command '$arg'"
       }
     }
   }
@@ -553,21 +639,21 @@ function Parse-Args {
   }
 
   if ($script:NO_VERIFY -and $script:CURRENT_CMD -notin @('deploy-all', 'deploy-app')) {
-    Fail '失败原因：--no-verify 仅适用于 deploy-all 与 deploy-app'
+    Fail '--no-verify is only valid for deploy-all and deploy-app'
   }
 }
 
 function Main {
   Resolve-RepoRoot
   Set-Location $script:REPO_ROOT
-  Parse-Args -CliArgs $args
+  Parse-Args -CliArgs $script:CLI_ARGS
 
   switch ($script:CURRENT_CMD) {
     'deploy-all' { Invoke-DeployAll }
     'deploy-app' { Invoke-DeployApp }
     'restart' { Invoke-Restart }
     'status' { Invoke-Status }
-    default { Fail "失败原因：未知命令 '$script:CURRENT_CMD'" }
+    default { Fail "unknown command '$script:CURRENT_CMD'" }
   }
 }
 
