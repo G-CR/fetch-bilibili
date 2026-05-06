@@ -47,12 +47,14 @@ func IsRiskError(err error) bool {
 	if errors.As(err, &permanent) {
 		return permanent.Code == http.StatusForbidden ||
 			permanent.Code == http.StatusPreconditionFailed ||
+			permanent.Code == -352 ||
 			permanent.Code == -403 ||
 			permanent.Code == -412
 	}
 
 	msg := err.Error()
-	return strings.Contains(msg, "(-403)") ||
+	return strings.Contains(msg, "(-352)") ||
+		strings.Contains(msg, "(-403)") ||
 		strings.Contains(msg, "(-412)") ||
 		strings.Contains(msg, "请求失败: 403") ||
 		strings.Contains(msg, "请求失败: 412")
@@ -72,7 +74,7 @@ var permanentPlayURLCodes = map[int]bool{
 
 const (
 	defaultBaseURL  = "https://api.bilibili.com"
-	defaultReferer  = "https://www.bilibili.com"
+	defaultReferer  = "https://www.bilibili.com/"
 	defaultPageSize = 5
 )
 
@@ -262,10 +264,28 @@ func (c *Client) ListVideos(ctx context.Context, uid string) ([]VideoMeta, error
 		return nil, err
 	}
 	if resp.Code != 0 {
-		if resp.Code == -403 || resp.Code == -412 {
+		if resp.Code == -352 {
+			// Wbi 签名校验失败，清除缓存后重试一次
+			c.invalidateWbiKeys()
+			c.markRiskReason(fmt.Sprintf("/x/space/wbi/arc/search 返回风控码 -352, 清除缓存重试"))
+
+			// 重新获取签名并重试
+			query, err := c.signWbiParams(ctx, params)
+			if err != nil {
+				return nil, err
+			}
+			if err := c.doGetJSON(ctx, "/x/space/wbi/arc/search", query, &resp); err != nil {
+				return nil, err
+			}
+			if resp.Code != 0 {
+				return nil, fmt.Errorf("拉取视频列表失败: %s(%d)", resp.Message, resp.Code)
+			}
+		} else if resp.Code == -403 || resp.Code == -412 {
 			c.markRiskReason(fmt.Sprintf("/x/space/wbi/arc/search 返回风控码 %d", resp.Code))
+			return nil, fmt.Errorf("拉取视频列表失败: %s(%d)", resp.Message, resp.Code)
+		} else {
+			return nil, fmt.Errorf("拉取视频列表失败: %s(%d)", resp.Message, resp.Code)
 		}
-		return nil, fmt.Errorf("拉取视频列表失败: %s(%d)", resp.Message, resp.Code)
 	}
 
 	metas := make([]VideoMeta, 0, len(resp.Data.List.VList))
@@ -428,10 +448,28 @@ func (c *Client) ResolveName(ctx context.Context, uid string) (string, error) {
 		return "", err
 	}
 	if resp.Code != 0 {
-		if resp.Code == -403 || resp.Code == -412 {
+		if resp.Code == -352 {
+			// Wbi 签名校验失败，清除缓存后重试一次
+			c.invalidateWbiKeys()
+			c.markRiskReason(fmt.Sprintf("/x/space/wbi/acc/info 返回风控码 -352, 清除缓存重试"))
+
+			// 重新获取签名并重试
+			query, err := c.signWbiParams(ctx, map[string]string{"mid": key})
+			if err != nil {
+				return "", err
+			}
+			if err := c.doGetJSON(ctx, "/x/space/wbi/acc/info", query, &resp); err != nil {
+				return "", err
+			}
+			if resp.Code != 0 {
+				return "", fmt.Errorf("查询博主信息失败: %s(%d)", resp.Message, resp.Code)
+			}
+		} else if resp.Code == -403 || resp.Code == -412 {
 			c.markRiskReason(fmt.Sprintf("/x/space/wbi/acc/info 返回风控码 %d", resp.Code))
+			return "", fmt.Errorf("查询博主信息失败: %s(%d)", resp.Message, resp.Code)
+		} else {
+			return "", fmt.Errorf("查询博主信息失败: %s(%d)", resp.Message, resp.Code)
 		}
-		return "", fmt.Errorf("查询博主信息失败: %s(%d)", resp.Message, resp.Code)
 	}
 
 	name := strings.TrimSpace(resp.Data.Name)
@@ -500,8 +538,7 @@ func (c *Client) doGetJSON(ctx context.Context, apiPath, query string, out any) 
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", c.userAgent)
-	req.Header.Set("Referer", c.referer)
+	c.setCommonHeaders(req, true)
 	if cookie := c.getCookie(); cookie != "" {
 		req.Header.Set("Cookie", cookie)
 	}
@@ -616,8 +653,7 @@ func (c *Client) downloadFile(ctx context.Context, rawURL, dst string) (int64, e
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("User-Agent", c.userAgent)
-	req.Header.Set("Referer", c.referer)
+	c.setCommonHeaders(req, false)
 	if cookie := c.getCookie(); cookie != "" {
 		req.Header.Set("Cookie", cookie)
 	}
@@ -750,8 +786,8 @@ func (c *Client) getWbiKeys(ctx context.Context) (wbiKeys, error) {
 	if err := c.doGetJSON(ctx, "/x/web-interface/nav", "", &resp); err != nil {
 		return wbiKeys{}, err
 	}
-	if resp.Code != 0 {
-		if resp.Code == -403 || resp.Code == -412 {
+	if resp.Code != 0 && resp.Code != -101 {
+		if resp.Code == -352 || resp.Code == -403 || resp.Code == -412 {
 			c.markRiskReason(fmt.Sprintf("/x/web-interface/nav 返回风控码 %d", resp.Code))
 		}
 		return wbiKeys{}, fmt.Errorf("获取 wbi key 失败: %s(%d)", resp.Message, resp.Code)
@@ -759,7 +795,7 @@ func (c *Client) getWbiKeys(ctx context.Context) (wbiKeys, error) {
 	imgURL := resp.Data.WbiImg.ImgURL
 	subURL := resp.Data.WbiImg.SubURL
 	if imgURL == "" || subURL == "" {
-		return wbiKeys{}, errors.New("获取 wbi key 失败")
+		return wbiKeys{}, errors.New("获取 wbi key 失败: wbi_img 为空")
 	}
 
 	imgKey := trimFileKey(imgURL)
@@ -780,6 +816,24 @@ func (c *Client) getWbiKeys(ctx context.Context) (wbiKeys, error) {
 	c.wbi = keys
 	c.mu.Unlock()
 	return keys, nil
+}
+
+func (c *Client) invalidateWbiKeys() {
+	c.mu.Lock()
+	c.wbi = wbiKeys{}
+	c.mu.Unlock()
+}
+
+func (c *Client) setCommonHeaders(req *http.Request, jsonAPI bool) {
+	req.Header.Set("User-Agent", c.userAgent)
+	req.Header.Set("Referer", c.referer)
+	req.Header.Set("Origin", "https://www.bilibili.com")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	if jsonAPI {
+		req.Header.Set("Accept", "application/json, text/plain, */*")
+	} else {
+		req.Header.Set("Accept", "*/*")
+	}
 }
 
 func buildCookie(cookie, sessdata string) string {
