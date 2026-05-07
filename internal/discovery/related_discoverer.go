@@ -150,7 +150,7 @@ func (d *RelatedDiscoverer) Discover(ctx context.Context) (RelatedDiscoverResult
 		}
 		agg.enrichCreator(ctx, d.client, creatorCache)
 		candidate := agg.buildCandidate(now, d.cfg.ScoreVersion)
-		scoreDetails := agg.buildScoreDetails(d.scorer)
+		scoreDetails := agg.buildScoreDetails(d.scorer, now)
 		candidate.Score = sumScoreDetails(scoreDetails)
 		candidate.ScoreVersion = d.cfg.ScoreVersion
 		candidate.LastScoredAt = now
@@ -408,24 +408,90 @@ func (a *relatedCandidateAggregate) buildSources(candidateID int64) []repo.Candi
 	return sources
 }
 
-func (a *relatedCandidateAggregate) buildScoreDetails(scorer *Scorer) []repo.CandidateCreatorScoreDetail {
+func (a *relatedCandidateAggregate) buildScoreDetails(scorer *Scorer, now time.Time) []repo.CandidateCreatorScoreDetail {
 	details := make([]repo.CandidateCreatorScoreDetail, 0, len(a.existing.scoreDetails)+1)
+	indexByFactor := make(map[string]int, len(a.existing.scoreDetails))
 	for _, item := range a.existing.scoreDetails {
-		if item.FactorKey == "similarity" {
+		if shouldReplaceRelatedScoreFactor(item.FactorKey) {
 			continue
 		}
+		indexByFactor[item.FactorKey] = len(details)
 		details = append(details, item)
 	}
-	score := scorer.Score(ScoreInput{
-		CandidateID:     a.existing.candidate.ID,
-		SimilarityLevel: a.bestSimilarity(),
-	})
+	score := scorer.Score(a.buildScoreInput(now))
 	for _, item := range score.Details {
-		if item.FactorKey == "similarity" {
-			details = append(details, item)
+		if existingIndex, ok := indexByFactor[item.FactorKey]; ok {
+			if item.ScoreDelta > details[existingIndex].ScoreDelta {
+				details[existingIndex] = item
+			}
+			continue
 		}
+		indexByFactor[item.FactorKey] = len(details)
+		details = append(details, item)
 	}
 	return details
+}
+
+func (a *relatedCandidateAggregate) buildScoreInput(now time.Time) ScoreInput {
+	deletionTraceSet := make(map[string]struct{})
+	seenVideos := make(map[string]struct{})
+	activity30d := 0
+
+	for _, sourceUID := range a.sourceOrder {
+		entry := a.sourcesByCreator[sourceUID]
+		if entry == nil {
+			continue
+		}
+		for _, keyword := range entry.keywords {
+			for _, hit := range detectDeletionTrace(keyword) {
+				deletionTraceSet[hit] = struct{}{}
+			}
+		}
+		for _, hit := range entry.candidateHits {
+			videoKey := firstNonEmptyString(hit.VideoID, hit.Title+"|"+hit.PublishTime.UTC().Format(time.RFC3339Nano))
+			if videoKey != "" {
+				if _, ok := seenVideos[videoKey]; !ok {
+					seenVideos[videoKey] = struct{}{}
+					if !hit.PublishTime.IsZero() && now.Sub(hit.PublishTime) <= 30*24*time.Hour && now.After(hit.PublishTime) {
+						activity30d++
+					}
+				}
+			}
+			for _, text := range []string{hit.Title, hit.Description} {
+				for _, marker := range detectDeletionTrace(text) {
+					deletionTraceSet[marker] = struct{}{}
+				}
+			}
+		}
+	}
+
+	deletionTraceHits := make([]string, 0, len(deletionTraceSet))
+	for hit := range deletionTraceSet {
+		deletionTraceHits = append(deletionTraceHits, hit)
+	}
+	sort.Strings(deletionTraceHits)
+
+	ignoreCount := 0
+	if a.existing.found && strings.TrimSpace(a.existing.candidate.Status) == "ignored" {
+		ignoreCount = 1
+	}
+	return ScoreInput{
+		CandidateID:       a.existing.candidate.ID,
+		Activity30d:       activity30d,
+		SimilarityLevel:   a.bestSimilarity(),
+		DeletionTraceHits: deletionTraceHits,
+		FollowerCount:     maxInt64(a.creator.FollowerCount, a.existing.candidate.FollowerCount),
+		IgnoreCount:       ignoreCount,
+	}
+}
+
+func shouldReplaceRelatedScoreFactor(factorKey string) bool {
+	switch strings.TrimSpace(factorKey) {
+	case "similarity", "account_size", "feedback":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *relatedCandidateAggregate) bestSimilarity() string {

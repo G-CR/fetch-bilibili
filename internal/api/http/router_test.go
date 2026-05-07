@@ -528,6 +528,62 @@ func (w *failOnFirstWriteRecorder) Write(p []byte) (int, error) {
 	return w.ResponseRecorder.Write(p)
 }
 
+func TestEventsStreamRejectsUnsupportedRequests(t *testing.T) {
+	t.Run("method not allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/events/stream", nil)
+		w := httptest.NewRecorder()
+		newEventsStreamHandler(live.NewBroker()).ServeHTTP(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d", w.Code)
+		}
+	})
+
+	t.Run("response writer without flusher", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/events/stream", nil)
+		w := &noFlushResponseWriter{header: http.Header{}}
+		newEventsStreamHandler(live.NewBroker()).ServeHTTP(w, req)
+		if w.status != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d", w.status)
+		}
+	})
+
+	t.Run("missing broker", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/events/stream", nil)
+		w := httptest.NewRecorder()
+		newEventsStreamHandler(nil).ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d", w.Code)
+		}
+	})
+}
+
+func TestWriteSSERejectsUnmarshalablePayload(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeSSE(&buf, httptest.NewRecorder(), nil, "bad", make(chan int)); err == nil {
+		t.Fatalf("expected marshal error")
+	}
+	if err := clearWriteDeadline(nil); err != nil {
+		t.Fatalf("expected nil controller no-op, got %v", err)
+	}
+}
+
+type noFlushResponseWriter struct {
+	header http.Header
+	status int
+}
+
+func (w *noFlushResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *noFlushResponseWriter) WriteHeader(statusCode int) {
+	w.status = statusCode
+}
+
+func (w *noFlushResponseWriter) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
 func readSSEMessage(t *testing.T, reader *bufio.Reader) string {
 	t.Helper()
 
@@ -1557,6 +1613,58 @@ func TestPutSystemConfig(t *testing.T) {
 	}
 }
 
+func TestSystemConfigErrors(t *testing.T) {
+	t.Run("service unavailable", func(t *testing.T) {
+		r := NewRouter(nil, nil, nil, nil, nil, live.NewBroker())
+		req := httptest.NewRequest(http.MethodGet, "/system/config", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d", w.Code)
+		}
+	})
+
+	t.Run("load error", func(t *testing.T) {
+		r := NewRouter(nil, nil, nil, &stubConfigService{loadErr: errors.New("读取失败")}, nil, live.NewBroker())
+		req := httptest.NewRequest(http.MethodGet, "/system/config", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		r := NewRouter(nil, nil, nil, &stubConfigService{}, nil, live.NewBroker())
+		req := httptest.NewRequest(http.MethodPut, "/system/config", bytes.NewReader([]byte(`{bad`)))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("save error", func(t *testing.T) {
+		r := NewRouter(nil, nil, nil, &stubConfigService{saveErr: errors.New("配置非法")}, nil, live.NewBroker())
+		req := httptest.NewRequest(http.MethodPut, "/system/config", bytes.NewReader([]byte(`{"content":"bad"}`)))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("method not allowed", func(t *testing.T) {
+		r := NewRouter(nil, nil, nil, &stubConfigService{}, nil, live.NewBroker())
+		req := httptest.NewRequest(http.MethodDelete, "/system/config", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d", w.Code)
+		}
+	})
+}
+
 func TestCandidateCreatorsList(t *testing.T) {
 	service := &stubCandidateService{
 		listViews: []discovery.CandidateView{
@@ -1748,6 +1856,24 @@ func TestCandidateCreatorsErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid score and page size", func(t *testing.T) {
+		r := newTestRouterWithCandidate(nil, nil, nil, &stubCandidateService{})
+		for _, path := range []string{
+			"/candidate-creators?min_score=-1",
+			"/candidate-creators?min_score=bad",
+			"/candidate-creators?page_size=0",
+			"/candidate-creators?page_size=bad",
+			"/candidate-creators?page=0",
+		} {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for %s, got %d", path, w.Code)
+			}
+		}
+	})
+
 	t.Run("invalid id", func(t *testing.T) {
 		r := newTestRouterWithCandidate(nil, nil, nil, &stubCandidateService{})
 		req := httptest.NewRequest(http.MethodGet, "/candidate-creators/bad", nil)
@@ -1755,6 +1881,85 @@ func TestCandidateCreatorsErrors(t *testing.T) {
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("list service error", func(t *testing.T) {
+		r := newTestRouterWithCandidate(nil, nil, nil, &stubCandidateService{listErr: errors.New("查询候选失败")})
+		req := httptest.NewRequest(http.MethodGet, "/candidate-creators", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d", w.Code)
+		}
+	})
+
+	t.Run("discover unavailable method and error", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/candidate-creators/discover", nil)
+		w := httptest.NewRecorder()
+		newTestRouterWithCandidate(nil, nil, nil, &stubCandidateService{}).ServeHTTP(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d", w.Code)
+		}
+
+		req = httptest.NewRequest(http.MethodPost, "/candidate-creators/discover", nil)
+		w = httptest.NewRecorder()
+		newTestRouterWithCandidate(nil, nil, nil, nil).ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d", w.Code)
+		}
+
+		req = httptest.NewRequest(http.MethodPost, "/candidate-creators/discover", nil)
+		w = httptest.NewRecorder()
+		newTestRouterWithCandidate(nil, nil, nil, &stubCandidateService{discoverErr: errors.New("入队失败")}).ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d", w.Code)
+		}
+	})
+
+	t.Run("item service unavailable and unsupported action", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/candidate-creators/1", nil)
+		w := httptest.NewRecorder()
+		newTestRouterWithCandidate(nil, nil, nil, nil).ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d", w.Code)
+		}
+
+		req = httptest.NewRequest(http.MethodPost, "/candidate-creators/1/unknown", nil)
+		w = httptest.NewRecorder()
+		newTestRouterWithCandidate(nil, nil, nil, &stubCandidateService{}).ServeHTTP(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d", w.Code)
+		}
+	})
+
+	t.Run("candidate error mapping", func(t *testing.T) {
+		cases := []struct {
+			name string
+			path string
+			svc  *stubCandidateService
+			want int
+		}{
+			{name: "detail not found", path: "/candidate-creators/1", svc: &stubCandidateService{detailErr: repo.ErrNotFound}, want: http.StatusNotFound},
+			{name: "detail sql no rows", path: "/candidate-creators/1", svc: &stubCandidateService{detailErr: sql.ErrNoRows}, want: http.StatusNotFound},
+			{name: "detail internal", path: "/candidate-creators/1", svc: &stubCandidateService{detailErr: errors.New("查询失败")}, want: http.StatusInternalServerError},
+			{name: "approve bad request", path: "/candidate-creators/1/approve", svc: &stubCandidateService{approveErr: errors.New("候选状态不允许批准")}, want: http.StatusBadRequest},
+			{name: "ignore bad request", path: "/candidate-creators/1/ignore", svc: &stubCandidateService{ignoreErr: errors.New("非法状态流转")}, want: http.StatusBadRequest},
+			{name: "block internal", path: "/candidate-creators/1/block", svc: &stubCandidateService{blockErr: errors.New("更新失败")}, want: http.StatusInternalServerError},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				method := http.MethodGet
+				if strings.Contains(tc.path, "/approve") || strings.Contains(tc.path, "/ignore") || strings.Contains(tc.path, "/block") {
+					method = http.MethodPost
+				}
+				req := httptest.NewRequest(method, tc.path, nil)
+				w := httptest.NewRecorder()
+				newTestRouterWithCandidate(nil, nil, nil, tc.svc).ServeHTTP(w, req)
+				if w.Code != tc.want {
+					t.Fatalf("expected %d, got %d body=%s", tc.want, w.Code, w.Body.String())
+				}
+			})
 		}
 	})
 }

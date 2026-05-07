@@ -188,6 +188,7 @@ func TestRelatedDiscovererMergesWithExistingKeywordCandidate(t *testing.T) {
 		scoreDetail: map[int64][]repo.CandidateCreatorScoreDetail{
 			7: {
 				{CandidateCreatorID: 7, FactorKey: "keyword_risk", FactorLabel: "命中高风险关键词", ScoreDelta: 15},
+				{CandidateCreatorID: 7, FactorKey: "activity_30d", FactorLabel: "最近 30 天更新活跃", ScoreDelta: 10},
 			},
 		},
 		nextID: 7,
@@ -222,8 +223,17 @@ func TestRelatedDiscovererMergesWithExistingKeywordCandidate(t *testing.T) {
 	if !foundRelated {
 		t.Fatalf("expected related source to be merged")
 	}
-	if len(candidates.scoreDetail[7]) != 2 {
-		t.Fatalf("expected keyword detail + similarity detail, got %+v", candidates.scoreDetail[7])
+	factors := make(map[string]repo.CandidateCreatorScoreDetail)
+	for _, detail := range candidates.scoreDetail[7] {
+		factors[detail.FactorKey] = detail
+	}
+	for _, key := range []string{"keyword_risk", "activity_30d", "similarity", "deletion_trace"} {
+		if _, ok := factors[key]; !ok {
+			t.Fatalf("expected score factor %q in %+v", key, candidates.scoreDetail[7])
+		}
+	}
+	if factors["activity_30d"].ScoreDelta != 10 {
+		t.Fatalf("expected existing keyword activity score to be preserved, got %+v", factors["activity_30d"])
 	}
 	if candidates.items["2001"].Score <= 15 {
 		t.Fatalf("expected merged score > 15, got %+v", candidates.items["2001"])
@@ -321,5 +331,71 @@ func TestRelatedDiscovererBackfillsFollowerCountFromCreatorSearch(t *testing.T) 
 	}
 	if len(client.creatorCalls) != 1 || client.creatorCalls[0] != (discoverySearchKey{keyword: "候选甲", page: 1}) {
 		t.Fatalf("expected creator search called with candidate name, got %+v", client.creatorCalls)
+	}
+}
+
+func TestRelatedDiscovererScoresActivityDeletionTraceAndAccountSize(t *testing.T) {
+	now := time.Date(2026, 4, 22, 10, 0, 0, 0, time.UTC)
+	creators := &relatedCreatorRepoStub{
+		active: []repo.Creator{
+			{ID: 1, Platform: "bilibili", UID: "1001", Name: "源博主", Status: "active"},
+		},
+	}
+	client := &relatedSourceClientStub{
+		creatorHits: map[discoverySearchKey][]bilibili.CreatorHit{
+			{keyword: "候选甲", page: 1}: {
+				{UID: "2001", Name: "候选甲", FollowerCount: 12000, ProfileURL: "https://space.bilibili.com/2001"},
+			},
+		},
+		videosByUID: map[string][]bilibili.VideoMeta{
+			"1001": {
+				{VideoID: "BVsrc1", Title: "补档 演唱会 全场", PublishTime: now.Add(-2 * time.Hour)},
+			},
+		},
+		searchByKeyword: map[string][]bilibili.VideoHit{
+			"补档": {
+				{UID: "2001", CreatorName: "候选甲", VideoID: "BV2001", Title: "补档 演唱会 全场", PublishTime: now.Add(-3 * time.Hour), ViewCount: 900},
+			},
+		},
+	}
+	candidates := &candidateDiscoveryRepoStub{nextID: 40}
+	cfg := config.Default().Discovery
+	cfg.Keywords = []string{"补档"}
+
+	discoverer := NewRelatedDiscoverer(creators, candidates, client, NewScorer(cfg), cfg)
+	discoverer.now = func() time.Time { return now }
+
+	result, err := discoverer.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	if result.Discovered != 1 {
+		t.Fatalf("expected discovered=1, got %+v", result)
+	}
+	if len(candidates.upserts) != 1 {
+		t.Fatalf("expected 1 upsert, got %+v", candidates.upserts)
+	}
+	saved := candidates.upserts[0]
+	if saved.Score < 45 {
+		t.Fatalf("expected related candidate score to include similarity, activity, deletion trace and account size, got %+v", saved)
+	}
+
+	factors := make(map[string]repo.CandidateCreatorScoreDetail)
+	for _, detail := range candidates.scoreDetail[saved.ID] {
+		factors[detail.FactorKey] = detail
+	}
+	for _, key := range []string{"similarity", "activity_30d", "deletion_trace", "account_size"} {
+		if _, ok := factors[key]; !ok {
+			t.Fatalf("expected score factor %q in %+v", key, candidates.scoreDetail[saved.ID])
+		}
+	}
+	if factors["activity_30d"].ScoreDelta != cfg.ScoreWeights.Activity30D.Low {
+		t.Fatalf("expected low activity score, got %+v", factors["activity_30d"])
+	}
+	if factors["deletion_trace"].ScoreDelta != cfg.ScoreWeights.DeletionTrace.Single {
+		t.Fatalf("expected single deletion trace score, got %+v", factors["deletion_trace"])
+	}
+	if factors["account_size"].ScoreDelta != cfg.ScoreWeights.AccountSize.SmallBonus {
+		t.Fatalf("expected small account bonus, got %+v", factors["account_size"])
 	}
 }

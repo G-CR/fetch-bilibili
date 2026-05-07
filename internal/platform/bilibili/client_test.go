@@ -3,6 +3,7 @@ package bilibili
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/rand"
 	"net"
 	"net/http"
@@ -48,6 +49,46 @@ func newIPv4TestServer(t *testing.T, handler http.Handler) *httptest.Server {
 	server.Listener = listener
 	server.Start()
 	return server
+}
+
+func TestPermanentErrorAndRiskDetection(t *testing.T) {
+	if got := (&PermanentError{Code: -412, Message: "风控"}).Error(); got != "风控(-412)" {
+		t.Fatalf("unexpected permanent error string: %s", got)
+	}
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "permanent forbidden", err: &PermanentError{Code: http.StatusForbidden, Message: "forbidden"}, want: true},
+		{name: "permanent precondition", err: &PermanentError{Code: http.StatusPreconditionFailed, Message: "precondition"}, want: true},
+		{name: "permanent api code", err: &PermanentError{Code: -403, Message: "risk"}, want: true},
+		{name: "permanent unrelated", err: &PermanentError{Code: 500, Message: "server"}, want: false},
+		{name: "wrapped text code", err: errors.New("请求失败: 412 Precondition Failed"), want: true},
+		{name: "plain", err: errors.New("plain error"), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsRiskError(tc.err); got != tc.want {
+				t.Fatalf("expected %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestClientOptionsAndCookieHelpers(t *testing.T) {
+	customHTTPClient := &http.Client{Timeout: time.Second}
+	client := New(config.BilibiliConfig{}, nil, WithHTTPClient(customHTTPClient), WithHTTPClient(nil))
+	if client.httpClient != customHTTPClient {
+		t.Fatalf("expected custom http client to be kept")
+	}
+
+	client.setCookie("  SESSDATA=token  ")
+	if got := client.getCookie(); got != "SESSDATA=token" {
+		t.Fatalf("expected trimmed cookie, got %q", got)
+	}
 }
 
 func TestListVideosAndCheckAvailable(t *testing.T) {

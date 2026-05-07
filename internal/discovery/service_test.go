@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -17,6 +18,11 @@ type candidateRepoStub struct {
 	list        []repo.CandidateCreator
 	total       int64
 	updates     []candidateStatusUpdate
+	findErr     error
+	listErr     error
+	sourceErr   error
+	scoreErr    error
+	updateErr   error
 }
 
 type candidateStatusUpdate struct {
@@ -38,6 +44,9 @@ func (s *candidateRepoStub) Upsert(ctx context.Context, candidate repo.Candidate
 }
 
 func (s *candidateRepoStub) FindByID(ctx context.Context, id int64) (repo.CandidateCreator, error) {
+	if s.findErr != nil {
+		return repo.CandidateCreator{}, s.findErr
+	}
 	candidate, ok := s.items[id]
 	if !ok {
 		return repo.CandidateCreator{}, repo.ErrNotFound
@@ -55,14 +64,23 @@ func (s *candidateRepoStub) FindByPlatformUID(ctx context.Context, platform, uid
 }
 
 func (s *candidateRepoStub) List(ctx context.Context, filter repo.CandidateListFilter) ([]repo.CandidateCreator, int64, error) {
+	if s.listErr != nil {
+		return nil, 0, s.listErr
+	}
 	return append([]repo.CandidateCreator(nil), s.list...), s.total, nil
 }
 
 func (s *candidateRepoStub) ListSources(ctx context.Context, candidateID int64) ([]repo.CandidateCreatorSource, error) {
+	if s.sourceErr != nil {
+		return nil, s.sourceErr
+	}
 	return append([]repo.CandidateCreatorSource(nil), s.sources[candidateID]...), nil
 }
 
 func (s *candidateRepoStub) ListScoreDetails(ctx context.Context, candidateID int64) ([]repo.CandidateCreatorScoreDetail, error) {
+	if s.scoreErr != nil {
+		return nil, s.scoreErr
+	}
 	return append([]repo.CandidateCreatorScoreDetail(nil), s.scoreDetail[candidateID]...), nil
 }
 
@@ -77,6 +95,9 @@ func (s *candidateRepoStub) ReplaceScoreDetails(ctx context.Context, candidateID
 }
 
 func (s *candidateRepoStub) UpdateReviewStatus(ctx context.Context, id int64, from []string, to string, at time.Time) error {
+	if s.updateErr != nil {
+		return s.updateErr
+	}
 	item, ok := s.items[id]
 	if !ok {
 		return repo.ErrNotFound
@@ -186,6 +207,53 @@ func TestServiceGetCandidate(t *testing.T) {
 	}
 }
 
+func TestServiceCandidateReadErrors(t *testing.T) {
+	t.Run("uninitialized list", func(t *testing.T) {
+		svc := NewService(nil, nil, nil, config.Default().Discovery)
+		if _, _, err := svc.ListCandidates(context.Background(), repo.CandidateListFilter{}); err == nil {
+			t.Fatalf("expected uninitialized list error")
+		}
+	})
+
+	t.Run("list error", func(t *testing.T) {
+		wantErr := errors.New("list failed")
+		svc := NewService(&candidateRepoStub{listErr: wantErr}, nil, nil, config.Default().Discovery)
+		if _, _, err := svc.ListCandidates(context.Background(), repo.CandidateListFilter{}); !errors.Is(err, wantErr) {
+			t.Fatalf("expected list error, got %v", err)
+		}
+	})
+
+	t.Run("source error while listing", func(t *testing.T) {
+		wantErr := errors.New("source failed")
+		svc := NewService(&candidateRepoStub{
+			list:      []repo.CandidateCreator{{ID: 1}},
+			total:     1,
+			sourceErr: wantErr,
+		}, nil, nil, config.Default().Discovery)
+		if _, _, err := svc.ListCandidates(context.Background(), repo.CandidateListFilter{}); !errors.Is(err, wantErr) {
+			t.Fatalf("expected source error, got %v", err)
+		}
+	})
+
+	t.Run("uninitialized detail", func(t *testing.T) {
+		svc := NewService(nil, nil, nil, config.Default().Discovery)
+		if _, err := svc.GetCandidate(context.Background(), 1); err == nil {
+			t.Fatalf("expected uninitialized detail error")
+		}
+	})
+
+	t.Run("score detail error", func(t *testing.T) {
+		wantErr := errors.New("score failed")
+		svc := NewService(&candidateRepoStub{
+			items:    map[int64]repo.CandidateCreator{1: {ID: 1}},
+			scoreErr: wantErr,
+		}, nil, nil, config.Default().Discovery)
+		if _, err := svc.GetCandidate(context.Background(), 1); !errors.Is(err, wantErr) {
+			t.Fatalf("expected score error, got %v", err)
+		}
+	})
+}
+
 func TestServiceApproveIsIdempotentAndEnqueuesFetchOnce(t *testing.T) {
 	now := time.Now().UTC()
 	candidates := &candidateRepoStub{
@@ -224,6 +292,88 @@ func TestServiceApproveIsIdempotentAndEnqueuesFetchOnce(t *testing.T) {
 	}
 	if len(fetcher.creatorIDs) != 1 {
 		t.Fatalf("expected no duplicate fetch enqueue, got %+v", fetcher.creatorIDs)
+	}
+}
+
+func TestServiceApproveErrorBranches(t *testing.T) {
+	t.Run("uninitialized", func(t *testing.T) {
+		svc := NewService(nil, nil, nil, config.Default().Discovery)
+		if _, err := svc.Approve(context.Background(), 1); err == nil {
+			t.Fatalf("expected uninitialized approve error")
+		}
+	})
+
+	t.Run("creator upsert error", func(t *testing.T) {
+		wantErr := errors.New("upsert failed")
+		svc := NewService(
+			&candidateRepoStub{items: map[int64]repo.CandidateCreator{1: {ID: 1, Status: "reviewing"}}},
+			&creatorWriterStub{err: wantErr},
+			nil,
+			config.Default().Discovery,
+		)
+		if _, err := svc.Approve(context.Background(), 1); !errors.Is(err, wantErr) {
+			t.Fatalf("expected upsert error, got %v", err)
+		}
+	})
+
+	t.Run("status update error", func(t *testing.T) {
+		wantErr := errors.New("update failed")
+		svc := NewService(
+			&candidateRepoStub{items: map[int64]repo.CandidateCreator{1: {ID: 1, Status: "reviewing"}}, updateErr: wantErr},
+			&creatorWriterStub{},
+			nil,
+			config.Default().Discovery,
+		)
+		if _, err := svc.Approve(context.Background(), 1); !errors.Is(err, wantErr) {
+			t.Fatalf("expected status update error, got %v", err)
+		}
+	})
+
+	t.Run("fetch enqueue error", func(t *testing.T) {
+		wantErr := errors.New("enqueue failed")
+		cfg := config.Default().Discovery
+		cfg.AutoEnqueueFetchOnApprove = true
+		svc := NewService(
+			&candidateRepoStub{items: map[int64]repo.CandidateCreator{1: {ID: 1, Status: "reviewing"}}},
+			&creatorWriterStub{result: repo.Creator{ID: 99}},
+			&fetchEnqueuerStub{err: wantErr},
+			cfg,
+		)
+		if _, err := svc.Approve(context.Background(), 1); !errors.Is(err, wantErr) {
+			t.Fatalf("expected fetch enqueue error, got %v", err)
+		}
+	})
+}
+
+func TestServiceReviewActionsUpdateStatus(t *testing.T) {
+	now := time.Now().UTC()
+	candidates := &candidateRepoStub{
+		items: map[int64]repo.CandidateCreator{
+			1: {ID: 1, Status: "reviewing"},
+			2: {ID: 2, Status: "reviewing"},
+			3: {ID: 3, Status: "ignored"},
+		},
+	}
+	svc := NewService(candidates, nil, nil, config.Default().Discovery)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.Ignore(context.Background(), 1); err != nil {
+		t.Fatalf("ignore: %v", err)
+	}
+	if err := svc.Block(context.Background(), 2); err != nil {
+		t.Fatalf("block: %v", err)
+	}
+	if err := svc.Review(context.Background(), 3); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if got := candidates.items[1].Status; got != "ignored" {
+		t.Fatalf("expected ignored, got %s", got)
+	}
+	if got := candidates.items[2].Status; got != "blocked" {
+		t.Fatalf("expected blocked, got %s", got)
+	}
+	if got := candidates.items[3].Status; got != "reviewing" {
+		t.Fatalf("expected reviewing, got %s", got)
 	}
 }
 
