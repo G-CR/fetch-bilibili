@@ -257,3 +257,41 @@ func TestKeywordDiscovererStopsAtConfiguredLimits(t *testing.T) {
 		t.Fatalf("unexpected upserts: %+v", repoStub.upserts)
 	}
 }
+
+func TestKeywordHelperScoringAndURLs(t *testing.T) {
+	cases := []struct {
+		keyword string
+		want    int
+	}{
+		{keyword: "补档 演唱会", want: 15},
+		{keyword: "熟肉 切片", want: 12},
+		{keyword: "普通主题", want: 10},
+		{keyword: "   ", want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.keyword, func(t *testing.T) {
+			if got := keywordRiskWeight(tc.keyword); got != tc.want {
+				t.Fatalf("expected weight %d, got %d", tc.want, got)
+			}
+		})
+	}
+
+	if !containsAny("这是一个补发片段", "补发", "删减") {
+		t.Fatalf("expected containsAny to match")
+	}
+	if containsAny("普通标题", "补档", "重传") {
+		t.Fatalf("expected containsAny to miss")
+	}
+	if got := profileURLForUID(" 352981594 "); got != "https://space.bilibili.com/352981594" {
+		t.Fatalf("unexpected profile url: %s", got)
+	}
+	if got := profileURLForUID(" "); got != "" {
+		t.Fatalf("expected empty profile url, got %s", got)
+	}
+	if got := maxInt64(10, 20); got != 20 {
+		t.Fatalf("expected max 20, got %d", got)
+	}
+	if got := maxInt64(30, 20); got != 30 {
+		t.Fatalf("expected max 30, got %d", got)
+	}
+}

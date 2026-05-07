@@ -399,3 +399,30 @@ func TestRelatedDiscovererScoresActivityDeletionTraceAndAccountSize(t *testing.T
 		t.Fatalf("expected small account bonus, got %+v", factors["account_size"])
 	}
 }
+
+func TestCompositeDiscovererNoop(t *testing.T) {
+	discoverer := NewCompositeDiscoverer(nil, nil)
+	result, err := discoverer.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	if result.Discovered != 0 || result.SkippedBlocked != 0 {
+		t.Fatalf("expected empty result, got %+v", result)
+	}
+}
+
+func TestRelatedUniqueAppendHelpers(t *testing.T) {
+	sourceVideos := appendUniqueSourceVideo(nil, bilibili.VideoMeta{VideoID: "BV1", Title: "源视频"})
+	sourceVideos = appendUniqueSourceVideo(sourceVideos, bilibili.VideoMeta{VideoID: "BV1", Title: "重复"})
+	sourceVideos = appendUniqueSourceVideo(sourceVideos, bilibili.VideoMeta{VideoID: "BV2", Title: "新视频"})
+	if len(sourceVideos) != 2 {
+		t.Fatalf("expected duplicate source video skipped, got %+v", sourceVideos)
+	}
+
+	hits := appendUniqueCandidateHit(nil, bilibili.VideoHit{VideoID: "BV1", Title: "候选"})
+	hits = appendUniqueCandidateHit(hits, bilibili.VideoHit{VideoID: "BV1", Title: "重复"})
+	hits = appendUniqueCandidateHit(hits, bilibili.VideoHit{VideoID: "BV2", Title: "候选 2"})
+	if len(hits) != 2 {
+		t.Fatalf("expected duplicate candidate hit skipped, got %+v", hits)
+	}
+}
