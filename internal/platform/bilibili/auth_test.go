@@ -68,3 +68,12 @@ func TestAuthWatcherNoClient(t *testing.T) {
 	defer cancel()
 	w.Start(ctx)
 }
+
+func TestFallbackCookieSource(t *testing.T) {
+	if got := fallbackCookieSource(""); got != "unknown" {
+		t.Fatalf("expected unknown, got %s", got)
+	}
+	if got := fallbackCookieSource("config.cookie"); got != "config.cookie" {
+		t.Fatalf("expected original source, got %s", got)
+	}
+}

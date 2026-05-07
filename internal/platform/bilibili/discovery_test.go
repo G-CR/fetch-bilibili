@@ -247,3 +247,143 @@ func TestSearchRelatedVideosDelegatesToVideoSearch(t *testing.T) {
 		t.Fatalf("unexpected hit: %+v", hits[0])
 	}
 }
+
+func TestSearchParsesFlexibleFieldShapes(t *testing.T) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("search_type") {
+		case "bili_user":
+			resp := map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"result": []map[string]any{
+						{
+							"mid":   12345,
+							"uname": 9988,
+							"upic":  "//img.test/avatar.jpg",
+							"fans":  "--",
+							"usign": nil,
+						},
+						{
+							"mid":   nil,
+							"uname": "无效作者",
+						},
+					},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case "video":
+			resp := map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"result": []map[string]any{
+						{
+							"mid":         98765,
+							"author":      123,
+							"bvid":        456,
+							"title":       nil,
+							"description": 789,
+							"pubdate":     "1710000000",
+							"play":        "--",
+							"favorite":    "",
+							"favorites":   "42",
+							"pic":         "//img.test/cover.jpg",
+							"duration":    "",
+						},
+						{
+							"mid":    111,
+							"author": "无效视频",
+							"bvid":   nil,
+						},
+					},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	client := New(config.BilibiliConfig{RequestTimeout: 2 * time.Second}, nil, WithBaseURL(server.URL))
+	creators, err := client.SearchCreators(context.Background(), "混合字段", 0, 0)
+	if err != nil {
+		t.Fatalf("SearchCreators error: %v", err)
+	}
+	if len(creators) != 1 {
+		t.Fatalf("expected 1 valid creator, got %+v", creators)
+	}
+	if creators[0].UID != "12345" || creators[0].Name != "9988" || creators[0].FollowerCount != 0 {
+		t.Fatalf("unexpected flexible creator: %+v", creators[0])
+	}
+	if creators[0].AvatarURL != "https://img.test/avatar.jpg" {
+		t.Fatalf("expected protocol-relative avatar normalized, got %q", creators[0].AvatarURL)
+	}
+
+	videos, err := client.SearchVideos(context.Background(), "混合字段", 0, 0)
+	if err != nil {
+		t.Fatalf("SearchVideos error: %v", err)
+	}
+	if len(videos) != 1 {
+		t.Fatalf("expected 1 valid video, got %+v", videos)
+	}
+	if videos[0].UID != "98765" || videos[0].CreatorName != "123" || videos[0].VideoID != "456" {
+		t.Fatalf("unexpected flexible video identity: %+v", videos[0])
+	}
+	if videos[0].Description != "789" || videos[0].ViewCount != 0 || videos[0].FavoriteCount != 42 {
+		t.Fatalf("unexpected flexible video fields: %+v", videos[0])
+	}
+	if !videos[0].PublishTime.Equal(time.Unix(1710000000, 0)) {
+		t.Fatalf("unexpected flexible publish time: %s", videos[0].PublishTime)
+	}
+	if videos[0].CoverURL != "https://img.test/cover.jpg" {
+		t.Fatalf("expected protocol-relative cover normalized, got %q", videos[0].CoverURL)
+	}
+}
+
+func TestSearchRejectsEmptyKeyword(t *testing.T) {
+	client := New(config.BilibiliConfig{}, nil)
+	if _, err := client.SearchCreators(context.Background(), " \t", 1, 20); err == nil {
+		t.Fatalf("expected empty creator keyword error")
+	}
+	if _, err := client.SearchVideos(context.Background(), " \t", 1, 20); err == nil {
+		t.Fatalf("expected empty video keyword error")
+	}
+}
+
+func TestFlexibleValuesHandleMalformedJSONShapes(t *testing.T) {
+	var text flexibleString
+	if err := json.Unmarshal([]byte(`{"unexpected":true}`), &text); err != nil {
+		t.Fatalf("unmarshal flexible string: %v", err)
+	}
+	if got := text.String(); got != `{"unexpected":true}` {
+		t.Fatalf("expected raw object string, got %q", got)
+	}
+
+	var number flexibleInt64
+	if err := json.Unmarshal([]byte(`"not-number"`), &number); err != nil {
+		t.Fatalf("unmarshal flexible int: %v", err)
+	}
+	if number.Int64() != 0 || number.String() != "" {
+		t.Fatalf("expected malformed int to become zero, got %d/%q", number.Int64(), number.String())
+	}
+	if err := json.Unmarshal([]byte(`{"bad":true}`), &number); err != nil {
+		t.Fatalf("unmarshal object int: %v", err)
+	}
+	if number.Int64() != 0 {
+		t.Fatalf("expected object int to become zero, got %d", number.Int64())
+	}
+
+	var ts flexibleTime
+	if err := json.Unmarshal([]byte(`"not-time"`), &ts); err != nil {
+		t.Fatalf("unmarshal flexible time: %v", err)
+	}
+	if !ts.Time().IsZero() {
+		t.Fatalf("expected malformed time to become zero, got %s", ts.Time())
+	}
+	if err := json.Unmarshal([]byte(`{"bad":true}`), &ts); err != nil {
+		t.Fatalf("unmarshal object time: %v", err)
+	}
+	if !ts.Time().IsZero() {
+		t.Fatalf("expected object time to become zero, got %s", ts.Time())
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -558,6 +560,83 @@ func TestNewMySQLError(t *testing.T) {
 
 	if _, err := New(cfg); err == nil {
 		t.Fatalf("expected error")
+	}
+}
+
+func TestNewMigrationError(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	origMySQL := newMySQL
+	origRunMySQLMigrations := runMySQLMigrations
+	defer func() {
+		newMySQL = origMySQL
+		runMySQLMigrations = origRunMySQLMigrations
+	}()
+
+	wantErr := errors.New("migration error")
+	newMySQL = func(cfg config.MySQLConfig) (*sql.DB, error) {
+		return db, nil
+	}
+	runMySQLMigrations = func(ctx context.Context, db *sql.DB) error {
+		return wantErr
+	}
+
+	cfg := config.Default()
+	cfg.Storage.RootDir = "/tmp"
+	cfg.MySQL.DSN = "dsn"
+	cfg.MySQL.AutoMigrate = true
+
+	if _, err := New(cfg); !errors.Is(err, wantErr) {
+		t.Fatalf("expected migration error, got %v", err)
+	}
+}
+
+func TestConfigEditorAdapterDelegatesLoadAndSave(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	before := "storage:\n  root_dir: /data/before\nmysql:\n  dsn: test\n"
+	after := "storage:\n  root_dir: /data/after\nmysql:\n  dsn: test\n"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	adapter := configEditorAdapter{editor: config.NewEditor(path, nil)}
+	doc, err := adapter.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load through adapter: %v", err)
+	}
+	if doc.Path != path || doc.Content != before {
+		t.Fatalf("unexpected document: %+v", doc)
+	}
+
+	result, err := adapter.Save(context.Background(), after)
+	if err != nil {
+		t.Fatalf("save through adapter: %v", err)
+	}
+	if !result.Changed || result.RestartScheduled || result.Path != path {
+		t.Fatalf("unexpected save result: %+v", result)
+	}
+}
+
+func TestCandidateAPIAdapterRejectsDiscoverWhenJobsMissing(t *testing.T) {
+	err := candidateAPIAdapter{}.TriggerDiscover(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "候选池服务未初始化") {
+		t.Fatalf("expected missing jobs error, got %v", err)
+	}
+}
+
+func TestResolveConfigPathUsesEnvAndDefault(t *testing.T) {
+	t.Setenv("FETCH_CONFIG", "/tmp/custom-config.yaml")
+	if got := resolveConfigPath(); got != "/tmp/custom-config.yaml" {
+		t.Fatalf("expected env config path, got %s", got)
+	}
+
+	t.Setenv("FETCH_CONFIG", "")
+	if got := resolveConfigPath(); got != "configs/config.yaml" {
+		t.Fatalf("expected default config path, got %s", got)
 	}
 }
 

@@ -247,6 +247,96 @@ func TestCandidateRepoListOrdersByReviewPriority(t *testing.T) {
 	}
 }
 
+func TestCandidateRepoListSourcesScansRowsAndCopiesJSON(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+	now := time.Now().UTC()
+	detail := []byte(`{"keyword":"补档"}`)
+	rows := sqlmock.NewRows([]string{
+		"id", "candidate_creator_id", "source_type", "source_value", "source_label", "weight", "detail_json", "created_at",
+	}).AddRow(
+		1, 7, "keyword", "补档", "关键词：补档", 15, detail, now,
+	).AddRow(
+		2, 7, "related_creator", "1001", nil, 10, nil, now.Add(time.Minute),
+	)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, candidate_creator_id, source_type, source_value, source_label, weight, detail_json, created_at FROM candidate_creator_sources WHERE candidate_creator_id = ? ORDER BY weight DESC, id ASC")).
+		WithArgs(int64(7)).
+		WillReturnRows(rows)
+
+	items, err := repoImpl.Candidates().ListSources(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("list sources error: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 sources, got %+v", items)
+	}
+	if items[0].SourceLabel != "关键词：补档" || string(items[0].DetailJSON) != string(detail) {
+		t.Fatalf("unexpected first source: %+v", items[0])
+	}
+	detail[0] = '['
+	if string(items[0].DetailJSON) != `{"keyword":"补档"}` {
+		t.Fatalf("expected detail json copied, got %s", string(items[0].DetailJSON))
+	}
+	if items[1].SourceLabel != "" || items[1].DetailJSON != nil {
+		t.Fatalf("expected null label/json to normalize empty, got %+v", items[1])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestCandidateRepoListScoreDetailsScansRowsAndCopiesJSON(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	repoImpl := New(db)
+	now := time.Now().UTC()
+	detail := []byte(`{"video_count":3}`)
+	rows := sqlmock.NewRows([]string{
+		"id", "candidate_creator_id", "factor_key", "factor_label", "score_delta", "detail_json", "created_at",
+	}).AddRow(
+		1, 7, "activity_30d", "最近 30 天更新活跃", 10, detail, now,
+	).AddRow(
+		2, 7, "similarity", "与已追踪池内容相似", 20, nil, now.Add(time.Minute),
+	)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, candidate_creator_id, factor_key, factor_label, score_delta, detail_json, created_at FROM candidate_creator_score_details WHERE candidate_creator_id = ? ORDER BY id ASC")).
+		WithArgs(int64(7)).
+		WillReturnRows(rows)
+
+	items, err := repoImpl.Candidates().ListScoreDetails(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("list score details error: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 score details, got %+v", items)
+	}
+	if items[0].FactorKey != "activity_30d" || items[0].ScoreDelta != 10 || string(items[0].DetailJSON) != string(detail) {
+		t.Fatalf("unexpected first detail: %+v", items[0])
+	}
+	detail[0] = '['
+	if string(items[0].DetailJSON) != `{"video_count":3}` {
+		t.Fatalf("expected detail json copied, got %s", string(items[0].DetailJSON))
+	}
+	if items[1].DetailJSON != nil {
+		t.Fatalf("expected nil detail json, got %+v", items[1])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
 func TestCandidateRepoFindByPlatformUIDMissingRecord(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
