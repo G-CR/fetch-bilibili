@@ -539,6 +539,10 @@ go test ./... -cover
     自动切换到 `DOCKER_BUILDKIT=0` 重试
   - 如需手工绕过，可直接执行 `DOCKER_BUILDKIT=0 docker compose up -d --build`
   - 如果你仍想继续使用 BuildKit，需要继续清理 Docker Desktop / 系统代理中的旧本地回环代理配置
+- `./scripts/deploy.sh` 提示未找到 `npm`：
+  - 脚本会自动查找 `PATH`、`/opt/homebrew/bin/npm` 与 `/usr/local/bin/npm`
+  - Apple Silicon 上通过 Homebrew 安装的 Node.js 通常位于 `/opt/homebrew/bin`
+  - 如果仍失败，先安装 Node.js，或把 `npm` 所在目录加入终端 `PATH`
 
 ## 路线图
 

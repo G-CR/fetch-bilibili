@@ -218,11 +218,35 @@ disable_fixture_fallbacks() {
   local script_content
   local search_go="/usr/local/go/bin/go"
   local search_npm="/usr/local/bin/npm"
+  local search_homebrew_npm="/opt/homebrew/bin/npm"
   mkdir -p "$fixture/fallbacks"
 
   script_content="$(cat "$script_path")"
   script_content="${script_content//$search_go/$fake_go}"
   script_content="${script_content//$search_npm/$fake_npm}"
+  script_content="${script_content//$search_homebrew_npm/$fake_npm}"
+  printf '%s' "$script_content" > "$script_path"
+}
+
+redirect_homebrew_npm_fallback() {
+  local fixture="$1"
+  local script_path="$fixture/repo/scripts/deploy.sh"
+  local fake_npm="$fixture/fallbacks/homebrew-npm"
+  local missing_npm="$fixture/fallbacks/missing-npm"
+  local script_content
+  mkdir -p "$fixture/fallbacks"
+
+  cat > "$fake_npm" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "homebrew-npm $*" >>"${TMP_LOG:?}"
+exit 0
+SCRIPT
+  chmod +x "$fake_npm"
+
+  script_content="$(cat "$script_path")"
+  script_content="${script_content//\/usr\/local\/bin\/npm/$missing_npm}"
+  script_content="${script_content//\/opt\/homebrew\/bin\/npm/$fake_npm}"
   printf '%s' "$script_content" > "$script_path"
 }
 
@@ -390,6 +414,17 @@ smoke_deploy_all_no_verify_without_go() {
   assert_file_contains "$fixture/log" "npm run build" "deploy-all --no-verify 缺少 go 时仍应执行前端构建"
 }
 
+smoke_deploy_all_uses_homebrew_npm_fallback() {
+  local fixture="$1"
+  : >"$fixture/log"
+  redirect_homebrew_npm_fallback "$fixture"
+  remove_fixture_command "$fixture" "npm"
+
+  run_deploy_with_path "$fixture" "$fixture/bin:/usr/bin:/bin" --no-verify >/dev/null
+
+  assert_file_contains "$fixture/log" "homebrew-npm run build" "PATH 缺少 npm 时应尝试 /opt/homebrew/bin/npm 兜底"
+}
+
 smoke_deploy_app_no_verify_without_go_or_npm() {
   local fixture="$1"
   : >"$fixture/log"
@@ -429,6 +464,9 @@ main() {
 
   make_fixture "$TMP_DIR/no-verify-no-go"
   smoke_deploy_all_no_verify_without_go "$TMP_DIR/no-verify-no-go"
+
+  make_fixture "$TMP_DIR/homebrew-npm-fallback"
+  smoke_deploy_all_uses_homebrew_npm_fallback "$TMP_DIR/homebrew-npm-fallback"
 
   make_fixture "$TMP_DIR/deploy-app"
   smoke_deploy_app_without_frontend_build "$TMP_DIR/deploy-app"

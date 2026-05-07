@@ -108,7 +108,7 @@ function Resolve-GoCommand {
 }
 
 function Resolve-NpmCommand {
-  $script:NPM_CMD = Resolve-CommandPath -Name 'npm' -FallbackPaths @('/usr/local/bin/npm', 'C:\Program Files\nodejs\npm.cmd')
+  $script:NPM_CMD = Resolve-CommandPath -Name 'npm' -FallbackPaths @('/opt/homebrew/bin/npm', '/usr/local/bin/npm', 'C:\Program Files\nodejs\npm.cmd')
   if (-not $script:NPM_CMD) {
     Fail 'npm command not found'
   }

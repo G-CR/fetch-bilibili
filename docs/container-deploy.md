@@ -113,6 +113,8 @@ docker compose up -d --build app
 
 - `bash scripts/deploy.sh deploy-all`
   - 执行后端测试、前端快速测试、前端构建，再启动全部容器。
+  - Shell 版会按 `PATH`、`/opt/homebrew/bin/npm`、`/usr/local/bin/npm`
+    顺序查找 `npm`，兼容 macOS Homebrew 默认安装路径。
 - `bash scripts/deploy.sh deploy-app`
   - 只验证并部署 `app`。
 - `bash scripts/deploy.sh restart`
@@ -121,6 +123,8 @@ docker compose up -d --build app
   - 查看当前服务状态。
 - `pwsh -NoProfile -File scripts/deploy.ps1 <command>`
   - PowerShell 侧提供与 Shell 版等价的命令语义。
+  - PowerShell 版同样会额外探测 `/opt/homebrew/bin/npm`，用于 macOS
+    PowerShell 或 VS Code 终端场景。
 
 ## 6. 镜像源
 

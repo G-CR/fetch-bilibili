@@ -44,3 +44,5 @@ tmp/
 
 # Data storage
 data/
+
+.github/

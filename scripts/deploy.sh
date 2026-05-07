@@ -75,7 +75,7 @@ resolve_go_command() {
 }
 
 resolve_npm_command() {
-  NPM_CMD="$(resolve_cmd npm /usr/local/bin/npm)" || fail "失败原因：未找到 npm 命令"
+  NPM_CMD="$(resolve_cmd npm /opt/homebrew/bin/npm /usr/local/bin/npm)" || fail "失败原因：未找到 npm 命令"
 }
 
 docker_compose() {
